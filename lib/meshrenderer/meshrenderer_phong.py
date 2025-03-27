@@ -57,7 +57,7 @@ class Renderer(object):
         self._fbo.bind()
 
         # VAO
-        attributes = gu.geo.load_meshes_sixd(models_cad_files, vertex_tmp_store_folder, recalculate_normals=False)
+        attributes = gu.geo.load_meshes_sixd(models_cad_files, vertex_tmp_store_folder, recalculate_normals=True)
 
         vertices = []
         indices = []

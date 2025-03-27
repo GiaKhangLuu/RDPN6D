@@ -348,7 +348,6 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
             dataset_name = 'delta_train'
         else:
             dataset_name = dataset_dict["dataset_name"]
-
         image = read_image_cv2(
             dataset_dict["file_name"], format=self.img_format)
         # should be consistent with the size in dataset_dict
@@ -441,7 +440,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
             if 'depth_factor' in dataset_dict.keys():
                 depth_img = depth_img / dataset_dict['depth_factor']
             else:
-                depth_img = depth_img / 1000.0
+                depth_img = depth_img / 1000.0  
             depth_img = depth_img[:, :, np.newaxis]
 
             #depth_img = depth_img * mask_img

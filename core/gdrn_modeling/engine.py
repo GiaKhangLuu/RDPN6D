@@ -10,7 +10,7 @@ import numpy as np
 from collections import OrderedDict
 
 from detectron2.utils.events import EventStorage
-from detectron2.checkpoint import PeriodicCheckpointer
+from detectron2.checkpoint import PeriodicCheckpointer, Checkpointer
 from detectron2.evaluation import (
     CityscapesInstanceEvaluator,
     CityscapesSemSegEvaluator,
@@ -158,6 +158,9 @@ class GDRN_Lite(LightningLite):
     def do_train(self, cfg, args, model, optimizer, resume=False):
         model.train()
 
+        min_avg_re = float('inf')
+        min_avg_te = float('inf')
+
         # some basic settings =========================
         dataset_meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
         data_ref = ref.__dict__[dataset_meta.ref_key]
@@ -178,17 +181,32 @@ class GDRN_Lite(LightningLite):
             data_loader_2 = None
             data_loader_2_iter = None
 
+        # load 3rd train dataloader if needed
+        train_3_dset_names = cfg.DATASETS.get("TRAIN3", ())
+        train_3_ratio = cfg.DATASETS.get("TRAIN3_RATIO", 0.0)
+        if train_3_ratio > 0.0 and len(train_3_dset_names) > 0:
+            data_loader_3 = build_gdrn_train_loader(cfg, train_3_dset_names)
+            data_loader_3_iter = iter(data_loader_3)
+        else:
+            data_loader_3 = None
+            data_loader_3_iter = None
+
         images_per_batch = cfg.SOLVER.IMS_PER_BATCH
         if isinstance(data_loader, AspectRatioGroupedDataset):
             dataset_len = len(data_loader.dataset.dataset)
             if data_loader_2 is not None:
                 dataset_len += len(data_loader_2.dataset.dataset)
+            if data_loader_3 is not None:
+                dataset_len += len(data_loader_3.dataset.dataset)
             iters_per_epoch = dataset_len // images_per_batch
         else:
             dataset_len = len(data_loader.dataset)
             if data_loader_2 is not None:
                 dataset_len += len(data_loader_2.dataset)
+            if data_loader_3 is not None:
+                dataset_len += len(data_loader_3.dataset)
             iters_per_epoch = dataset_len // images_per_batch
+
         max_iter = cfg.SOLVER.TOTAL_EPOCHS * iters_per_epoch
         dprint("images_per_batch: ", images_per_batch)
         dprint("dataset length: ", dataset_len)
@@ -200,6 +218,9 @@ class GDRN_Lite(LightningLite):
         if data_loader_2 is not None:
             data_loader_2 = self.setup_dataloaders(
                 data_loader_2, replace_sampler=False, move_to_device=False)
+        if data_loader_3 is not None:
+            data_loader_3 = self.setup_dataloaders(
+                data_loader_3, replace_sampler=False, move_to_device=False)
 
         scheduler = solver_utils.build_lr_scheduler(
             cfg, optimizer, total_iters=max_iter)
@@ -220,6 +241,7 @@ class GDRN_Lite(LightningLite):
         )
         start_iter = checkpointer.resume_or_load(
             cfg.MODEL.WEIGHTS, resume=resume).get("iteration", -1) + 1
+        start_iter = 0
 
         if cfg.SOLVER.CHECKPOINT_BY_EPOCH:
             ckpt_period = cfg.SOLVER.CHECKPOINT_PERIOD * iters_per_epoch
@@ -228,6 +250,7 @@ class GDRN_Lite(LightningLite):
         periodic_checkpointer = PeriodicCheckpointer(
             checkpointer, ckpt_period, max_iter=max_iter, max_to_keep=cfg.SOLVER.MAX_TO_KEEP
         )
+        best_checkpointer = Checkpointer(model, cfg.OUTPUT_DIR)
 
         # build writers ==============================================
         tbx_event_writer = self.get_tbx_event_writer(
@@ -317,7 +340,15 @@ class GDRN_Lite(LightningLite):
                     and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
                     and iteration != max_iter - 1
                 ):
-                    self.do_test(cfg, model, epoch=epoch, iteration=iteration)
+                    test_rs = self.do_test(cfg, model, epoch=epoch, iteration=iteration)
+                    if test_rs is not None:
+                        avg_re = np.mean(test_rs["lumi_piano"]["re"])
+                        avg_te = np.mean(test_rs["lumi_piano"]["te"])
+                        if avg_re < min_avg_re or avg_te < min_avg_te:
+                            best_checkpointer.save("best")
+                            avg_re = min(avg_re, min_avg_re)
+                            avg_te = min(avg_te, min_avg_te)
+
                     # Compared to "train_net.py", the test results are not dumped to EventStorage
                     self.barrier()
 
@@ -328,43 +359,46 @@ class GDRN_Lite(LightningLite):
                     for writer in writers:
                         writer.write()
                     # visualize some images ========================================
-                    if cfg.TRAIN.VIS_IMG:
+                    if cfg.TRAIN.VIS_IMG and len(out_dict) > 0:
                         with torch.no_grad():
                             vis_i = 0
-                            roi_img_vis = batch["roi_img"][vis_i].cpu().numpy()
+                            #roi_img_vis = batch["roi_img"][vis_i].cpu().numpy()
+                            #roi_img_vis = denormalize_image(
+                                #roi_img_vis, cfg).transpose(1, 2, 0).astype("uint8")
+                            roi_img_vis = batch["roi_img"][vis_i][:3, ...].cpu().numpy()
                             roi_img_vis = denormalize_image(
-                                roi_img_vis, cfg).transpose(1, 2, 0).astype("uint8")
+                                roi_img_vis, cfg).astype("uint8")
                             tbx_writer.add_image(
                                 "input_image", roi_img_vis, iteration)
 
-                            out_coor_x = out_dict["coor_x"].detach()
-                            out_coor_y = out_dict["coor_y"].detach()
-                            out_coor_z = out_dict["coor_z"].detach()
-                            out_xyz = get_out_coor(
-                                cfg, out_coor_x, out_coor_y, out_coor_z)
+                            if out_dict.get("coor_x", None) is not None:
+                                out_coor_x = out_dict["coor_x"].detach()
+                                out_coor_y = out_dict["coor_y"].detach()
+                                out_coor_z = out_dict["coor_z"].detach()
+                                out_xyz = get_out_coor(
+                                    cfg, out_coor_x, out_coor_y, out_coor_z)
 
-                            out_xyz_vis = out_xyz[vis_i].cpu(
-                            ).numpy().transpose(1, 2, 0)
-                            out_xyz_vis = get_emb_show(out_xyz_vis)
-                            tbx_writer.add_image(
-                                "out_xyz", out_xyz_vis, iteration)
+                                out_xyz_vis = out_xyz[vis_i].cpu(
+                                ).numpy().transpose(1, 2, 0)
+                                out_xyz_vis = get_emb_show(out_xyz_vis)
+                                tbx_writer.add_image(
+                                    "out_xyz", out_xyz_vis, iteration)
 
-                            gt_xyz_vis = batch["roi_xyz"][vis_i].cpu(
-                            ).numpy().transpose(1, 2, 0)
-                            gt_xyz_vis = get_emb_show(gt_xyz_vis)
-                            tbx_writer.add_image(
-                                "gt_xyz", gt_xyz_vis, iteration)
+                                gt_xyz_vis = batch["roi_xyz"][vis_i].cpu().numpy().transpose(1, 2, 0)
+                                gt_xyz_vis = get_emb_show(gt_xyz_vis)
+                                tbx_writer.add_image(
+                                    "gt_xyz", gt_xyz_vis, iteration)
 
-                            out_mask = out_dict["mask"].detach()
-                            out_mask = get_out_mask(cfg, out_mask)
-                            out_mask_vis = out_mask[vis_i, 0].cpu().numpy()
-                            tbx_writer.add_image(
-                                "out_mask", out_mask_vis, iteration)
+                                out_mask = out_dict["mask"].detach()
+                                out_mask = get_out_mask(cfg, out_mask)
+                                out_mask_vis = out_mask[vis_i, 0].cpu().numpy()
+                                tbx_writer.add_image(
+                                    "out_mask", out_mask_vis, iteration)
 
-                            gt_mask_vis = batch["roi_mask"][vis_i].detach(
-                            ).cpu().numpy()
-                            tbx_writer.add_image(
-                                "gt_mask", gt_mask_vis, iteration)
+                                gt_mask_vis = batch["roi_mask"][vis_i].detach(
+                                ).cpu().numpy()
+                                tbx_writer.add_image(
+                                    "gt_mask", gt_mask_vis, iteration)
 
                 if (iteration + 1) % periodic_checkpointer.period == 0 or (
                     periodic_checkpointer.max_iter is not None and (

@@ -726,7 +726,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                 "\n The current evaluation on multi-gpu might be incorrect, run with single-gpu instead."
             )
 
-        return {}
+        return errors
 
     def _eval_predictions_precision(self):
         """NOTE: eval precision instead of recall

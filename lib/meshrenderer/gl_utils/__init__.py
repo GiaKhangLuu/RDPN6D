@@ -17,7 +17,7 @@ from .vao import VAO
 from .ibo import IBO
 from .ebo import EBO
 from .camera import Camera
-from .window import Window
+#from .window import Window
 from .material import Material
 from . import geometry as geo
 from .tiles import tiles, tiles4
