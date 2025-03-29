@@ -48,8 +48,15 @@ PROJ_ROOT = osp.normpath(osp.join(cur_dir, "../.."))
 class GDRN_EvaluatorCustom(DatasetEvaluator):
     """custom evaluation of 6d pose."""
 
-    def __init__(self, cfg, dataset_name, distributed, output_dir, train_objs=None):
-        self.cfg = cfg
+    def __init__(
+        self, 
+        dataset_name, 
+        distributed, 
+        output_dir, 
+        train_objs=None,
+        **kwargs
+    ):  
+        self.kwargs = kwargs
         self._distributed = distributed
         self._output_dir = output_dir
         mmcv.mkdir_or_exist(output_dir)
@@ -77,14 +84,14 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
             inout.load_ply(model_path, vertex_scale=self.data_ref.vertex_scale) for model_path in self.model_paths
         ]
 
-        self.eval_precision = cfg.VAL.get("EVAL_PRECISION", False)
+        self.eval_precision = self.kwargs.get("eval_precision", False)   
         self._logger.info(f"eval precision: {self.eval_precision}")
         # eval cached
         self.use_cache = False
         # self.ren = renderer.create_renderer(480, 640, "python", mode="depth")
         # for (i, obj_id) in enumerate(self.obj_ids):
         #     self.ren.add_object(obj_id, self.model_paths[i])
-        if cfg.VAL.EVAL_CACHED or cfg.VAL.EVAL_PRINT_ONLY:
+        if self.kwargs.get("eval_cached") or self.kwargs.get("eval_print_only"): 
             self.use_cache = True
             if self.eval_precision:
                 self._eval_predictions_precision()
@@ -164,15 +171,15 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                 contains keys like "height", "width", "file_name", "image_id", "scene_id".
             outputs:
         """
-        cfg = self.cfg
-        if cfg.TEST.USE_PNP:
-            if cfg.TEST.PNP_TYPE.lower() == "ransac_pnp":
+
+        if self.kwargs.get("use_pnp"):  
+            if self.kwargs.get("pnp_type").lower() == "ransac_pnp":  
                 return self.process_pnp_ransac(inputs, outputs, out_dict)
-            elif cfg.TEST.PNP_TYPE.lower() == "net_iter_pnp":
+            elif self.kwargs.get("pnp_type").lower() == "net_iter_pnp":
                 return self.process_net_and_pnp(inputs, outputs, out_dict, pnp_type="iter")
-            elif cfg.TEST.PNP_TYPE.lower() == "net_ransac_pnp":
+            elif self.kwargs.get("pnp_type").lower() == "net_ransac_pnp":
                 return self.process_net_and_pnp(inputs, outputs, out_dict, pnp_type="ransac")
-            elif cfg.TEST.PNP_TYPE.lower() == "net_ransac_pnp_rot":
+            elif self.kwargs.get("pnp_type").lower() == "net_ransac_pnp_rot":
                 # use rot from PnP/RANSAC and translation from Net
                 return self.process_net_and_pnp(inputs, outputs, out_dict, pnp_type="ransac_rot")
             else:
@@ -223,14 +230,13 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
             pnp_type: iter | ransac (use ransac+EPnP)
             outputs:
         """
-        cfg = self.cfg
         out_coor_x = out_dict["coor_x"].detach()
         out_coor_y = out_dict["coor_y"].detach()
         out_coor_z = out_dict["coor_z"].detach()
-        out_xyz = get_out_coor(cfg, out_coor_x, out_coor_y, out_coor_z)
+        out_xyz = get_out_coor(out_coor_x, out_coor_y, out_coor_z, self.kwargs.get("rot_head_xyz_bin"))
         out_xyz = out_xyz.to(self._cpu_device).numpy()
 
-        out_mask = get_out_mask(cfg, out_dict["mask"].detach())
+        out_mask = get_out_mask(out_dict["mask"].detach(), self.kwargs.get("rot_head_mask_loss_type"))
         out_mask = out_mask.to(self._cpu_device).numpy()
 
         out_rots = out_dict["rot"].detach().to(self._cpu_device).numpy()
@@ -276,7 +282,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                     im_H=im_H,
                     im_W=im_W,
                     extent=_input["roi_extent"][inst_i].cpu().numpy(),
-                    mask_thr=cfg.MODEL.CDPN.ROT_HEAD.MASK_THR_TEST,
+                    mask_thr=self.kwargs.get("rot_head_mask_thr_test"),
                 )
 
                 rot_est_net = out_rots[out_i]
@@ -361,14 +367,13 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                 contains keys like "height", "width", "file_name", "image_id", "scene_id".
             outputs:
         """
-        cfg = self.cfg
         out_coor_x = out_dict["coor_x"].detach()
         out_coor_y = out_dict["coor_y"].detach()
         out_coor_z = out_dict["coor_z"].detach()
-        out_xyz = get_out_coor(cfg, out_coor_x, out_coor_y, out_coor_z)
+        out_xyz = get_out_coor(out_coor_x, out_coor_y, out_coor_z, self.kwargs.get("rot_head_xyz_bin"))
         out_xyz = out_xyz.to(self._cpu_device).numpy()
 
-        out_mask = get_out_mask(cfg, out_dict["mask"].detach())
+        out_mask = get_out_mask(out_dict["mask"].detach(), self.kwargs.get("rot_head_mask_loss_type"))
         out_mask = out_mask.to(self._cpu_device).numpy()
 
         out_trans = out_dict["trans"].detach().to(self._cpu_device).numpy()
@@ -401,7 +406,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                 im_id = int(scene_im_id_split[1])
 
                 # get pose
-                if "rot" in cfg.MODEL.CDPN.TASK.lower():
+                if "rot" in self.kwargs.get("cdpn_task").lower():  
                     xyz_i = out_xyz[out_i].transpose(1, 2, 0)
                     mask_i = np.squeeze(out_mask[out_i])
 
@@ -412,7 +417,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                         im_H=im_H,
                         im_W=im_W,
                         extent=_input["roi_extent"][inst_i].cpu().numpy(),
-                        mask_thr=cfg.MODEL.CDPN.ROT_HEAD.MASK_THR_TEST,
+                        mask_thr=self.kwargs.get("rot_head_mask_thr_test"),
                     )
 
                     pnp_method = cv2.SOLVEPNP_EPNP
@@ -435,11 +440,11 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                             "num points: {}".format(len(img_points)))
                         pose_est = -100 * np.ones((3, 4), dtype=np.float32)
 
-                if "trans" in cfg.MODEL.CDPN.TASK.lower():
+                if "trans" in self.kwargs.get("cdpn_task").lower(): 
                     # compute T from trans head
                     trans_i = out_trans[out_i]
 
-                    test_bbox_type = cfg.TEST.TEST_BBOX_TYPE
+                    test_bbox_type = self.kwargs.get("test_bbox_type")
                     if test_bbox_type == "gt":
                         bbox_key = "bbox"
                     else:
@@ -459,7 +464,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
                     ty = (oy_2d - K[1, 2]) * tz / K[1, 1]
 
                     pred_trans = np.asarray([tx, ty, tz])
-                    if "rot" in cfg.MODEL.CDPN.TASK.lower():
+                    if "rot" in self.kwargs.get("cdpn_task").lower(): 
                         pose_est[:3, 3] = pred_trans
                     else:
                         pose_est = np.concatenate(
@@ -521,8 +526,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
         Return results with the metrics of the tasks.
         """
         self._logger.info("Eval results ...")
-        cfg = self.cfg
-        method_name = f"{cfg.EXP_ID.replace('_', '-')}"
+        method_name = self.kwargs.get("exp_id").replace('_', '-')
         cache_path = osp.join(
             self._output_dir, f"{method_name}_{self.dataset_name}_preds.pkl")
         if osp.exists(cache_path) and self.use_cache:
@@ -590,7 +594,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
 
                 t_error = te(t_pred, t_gt)
 
-                if obj_name in cfg.DATASETS.SYM_OBJS:
+                if obj_name in self.kwargs.get("sym_objs"):
                     R_gt_sym = get_closest_rot(
                         R_pred, R_gt, self._metadata.sym_infos[cur_label])
                     r_error = re(R_pred, R_gt_sym)
@@ -734,8 +738,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
         Return results with the metrics of the tasks.
         """
         self._logger.info("Eval results ...")
-        cfg = self.cfg
-        method_name = f"{cfg.EXP_ID.replace('_', '-')}"
+        method_name = self.kwargs.get("exp_id").replace('_', '-')
         cache_path = osp.join(
             self._output_dir, f"{method_name}_{self.dataset_name}_preds.pkl")
         if osp.exists(cache_path) and self.use_cache:
@@ -801,7 +804,7 @@ class GDRN_EvaluatorCustom(DatasetEvaluator):
 
                 t_error = te(t_pred, t_gt)
 
-                if obj_name in cfg.DATASETS.SYM_OBJS:
+                if obj_name in self.kwargs.get("sym_objs"):
                     R_gt_sym = get_closest_rot(
                         R_pred, R_gt, self._metadata.sym_infos[cur_label])
                     r_error = re(R_pred, R_gt_sym)

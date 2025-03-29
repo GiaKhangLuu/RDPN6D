@@ -43,7 +43,7 @@ class ConvPnPNet(nn.Module):
         self,
         nIn,
         featdim=128,
-        rot_dim=4,
+        rot_type="allo_rot6d",
         num_layers=3,
         norm="GN",
         num_gn_groups=32,
@@ -87,6 +87,8 @@ class ConvPnPNet(nn.Module):
                 get_norm(norm, featdim, num_gn_groups=num_gn_groups))
             self.features.append(nn.ReLU(inplace=True))
 
+        self.rot_type = rot_type
+        rot_dim = self.get_rot_dim_by_rot_type()
         # self.fc1 = nn.Linear(featdim * 8 * 8 + 128, 1024)  # NOTE: 128 for extents feature
         self.fc1 = nn.Linear(featdim * 8 * 8, 1024)
         self.fc2 = nn.Linear(1024, 256)
@@ -111,6 +113,17 @@ class ConvPnPNet(nn.Module):
                 normal_init(m, std=0.001)
         normal_init(self.fc_r, std=0.01)
         normal_init(self.fc_t, std=0.01)
+
+    def get_rot_dim_by_rot_type(self):
+        if self.rot_type in ["allo_quat", "ego_quat"]:
+            rot_dim = 4
+        elif self.rot_type in ["allo_log_quat", "ego_log_quat", "allo_lie_vec", "ego_lie_vec"]:
+            rot_dim = 3
+        elif self.rot_type in ["allo_rot6d", "ego_rot6d"]:
+            rot_dim = 6
+        else:
+            raise ValueError(f"Unknown ROT_TYPE: {self.rot_type}")
+        return rot_dim
 
     def forward(self, coor_feat, region=None, extents=None, mask_attention=None):
         """

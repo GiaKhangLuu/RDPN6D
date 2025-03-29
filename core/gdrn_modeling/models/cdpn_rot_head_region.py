@@ -5,18 +5,35 @@ from core.utils.layer_utils import get_norm
 from torch.nn.modules.batchnorm import _BatchNorm
 from .resnet_backbone import resnet_spec
 
+def get_xyz_mask_region_out_dim(xyz_loss_type, mask_loss_type, xyz_bin, num_regions):
+    if xyz_loss_type in ["MSE", "L1", "L2", "SmoothL1"]:
+        r_out_dim = 3
+    elif xyz_loss_type in ["CE_coor", "CE"]:
+        r_out_dim = 3 * (xyz_bin + 1)
+    else:
+        raise NotImplementedError(f"unknown xyz loss type: {xyz_loss_type}")
+
+    if mask_loss_type in ["L1", "BCE"]:
+        mask_out_dim = 1
+    elif mask_loss_type in ["CE"]:
+        mask_out_dim = 2
+    else:
+        raise NotImplementedError(f"unknown mask loss type: {mask_loss_type}")
+
+    region_out_dim = num_regions + 1
+    # at least 2 regions (with bg, at least 3 regions)
+    assert region_out_dim > 2, region_out_dim
+
+    return r_out_dim, mask_out_dim, region_out_dim
 
 class RotWithRegionHead(nn.Module):
     def __init__(
         self,
-        cfg,
         in_channels,
         num_layers=3,
         num_filters=256,
         kernel_size=3,
         output_kernel_size=1,
-        rot_output_dim=3,
-        mask_output_dim=1,
         freeze=False,
         num_classes=1,
         rot_class_aware=False,
@@ -25,6 +42,11 @@ class RotWithRegionHead(nn.Module):
         num_regions=8,
         norm="BN",
         num_gn_groups=32,
+        concat=False,
+        backbone_num_layers=34,
+        xyz_loss_type="L1",
+        mask_loss_type="L1",
+        xyz_bin=64,
     ):
         super().__init__()
         regnet = False
@@ -32,7 +54,11 @@ class RotWithRegionHead(nn.Module):
         if regnet :
             in_channels = 512
         self.freeze = freeze
-        self.concat = cfg.MODEL.CDPN.ROT_HEAD.ROT_CONCAT
+        self.concat = concat
+        self.num_classes = num_classes
+        self.rot_class_aware = rot_class_aware
+        self.mask_class_aware = mask_class_aware 
+        self.region_class_aware = region_class_aware
         assert kernel_size == 2 or kernel_size == 3 or kernel_size == 4, "Only support kenerl 2, 3 and 4"
         assert num_regions > 1, f"Only support num_regions > 1, but got {num_regions}"
         padding = 1
@@ -49,7 +75,7 @@ class RotWithRegionHead(nn.Module):
             pad = 1
 
         if self.concat:
-            _, _, channels, _ = resnet_spec[cfg.MODEL.CDPN.BACKBONE.NUM_LAYERS]
+            _, _, channels, _ = resnet_spec[backbone_num_layers]
             self.features = nn.ModuleList()
             self.features.append(
                 nn.ConvTranspose2d(
@@ -114,6 +140,13 @@ class RotWithRegionHead(nn.Module):
                 )
                 self.features.append(get_norm(norm, num_filters, num_gn_groups=num_gn_groups))
                 self.features.append(nn.ReLU(inplace=True))
+
+        rot_output_dim, mask_output_dim, _ = get_xyz_mask_region_out_dim(
+            xyz_loss_type=xyz_loss_type,
+            mask_loss_type=mask_loss_type,
+            xyz_bin=xyz_bin,
+            num_regions=num_regions,
+        )
 
         self.rot_output_dim = rot_output_dim
         if rot_class_aware:

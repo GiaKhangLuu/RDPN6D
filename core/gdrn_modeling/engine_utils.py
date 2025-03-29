@@ -3,9 +3,9 @@ import numpy as np
 import itertools
 
 
-def batch_data(cfg, data, device="cuda", phase="train"):
+def batch_data(data, device="cuda", phase="train"):
     if phase != "train":
-        return batch_data_test(cfg, data, device=device)
+        return batch_data_test(data, device=device)
 
     # batch training data
     batch = {}
@@ -63,7 +63,7 @@ def batch_data(cfg, data, device="cuda", phase="train"):
     return batch
 
 
-def batch_data_test(cfg, data, device="cuda"):
+def batch_data_test(data, device="cuda"):
     batch = {}
     if not isinstance(data, list):  # bs = 1
         data = [data]
@@ -99,7 +99,7 @@ def batch_data_test(cfg, data, device="cuda"):
     return batch
 
 
-def get_out_coor(cfg, coor_x, coor_y, coor_z):
+def get_out_coor(coor_x, coor_y, coor_z, rot_head_xyz_bin):
     # xyz_loss_type = cfg.MODEL.CDPN.ROT_HEAD.XYZ_LOSS_TYPE
     if (coor_x.shape[1] == 1) and (coor_y.shape[1] == 1) and (coor_z.shape[1] == 1):
         coor_ = torch.cat([coor_x, coor_y, coor_z], dim=1)
@@ -108,17 +108,17 @@ def get_out_coor(cfg, coor_x, coor_y, coor_z):
             [torch.argmax(coor_x, dim=1), torch.argmax(coor_y, dim=1), torch.argmax(coor_z, dim=1)], dim=1
         )
         # set the coordinats of background to (0, 0, 0)
-        coor_[coor_ == cfg.MODEL.CDPN.ROT_HEAD.XYZ_BIN] = 0
+        coor_[coor_ == rot_head_xyz_bin] = 0
         # normalize the coordinates to [0, 1]
-        coor_ = coor_ / float(cfg.MODEL.CDPN.ROT_HEAD.XYZ_BIN - 1)
+        coor_ = coor_ / float(rot_head_xyz_bin - 1)
 
     return coor_
 
 
-def get_out_mask(cfg, pred_mask):
+def get_out_mask(pred_mask, rot_head_mask_loss_type):
     # (b,c,h,w)
     # output: (b, 1, h, w)
-    mask_loss_type = cfg.MODEL.CDPN.ROT_HEAD.MASK_LOSS_TYPE
+    mask_loss_type = rot_head_mask_loss_type
     bs, c, h, w = pred_mask.shape
     if mask_loss_type == "L1":
         assert c == 1, c

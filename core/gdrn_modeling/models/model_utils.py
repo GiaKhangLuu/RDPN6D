@@ -21,10 +21,10 @@ def get_2d_coord(bs, width, height, dtype=torch.float32, device="cuda"):
     return coord_tensor  # [bs, 2, h, w]
 
 
-def get_mask_prob(cfg, pred_mask):
+def get_mask_prob(mask_loss_type, pred_mask):
     # (b,c,h,w)
     # output: (b, 1, h, w)
-    mask_loss_type = cfg.MODEL.CDPN.ROT_HEAD.MASK_LOSS_TYPE
+    #mask_loss_type = cfg.MODEL.CDPN.ROT_HEAD.MASK_LOSS_TYPE
     bs, c, h, w = pred_mask.shape
     if mask_loss_type == "L1":
         assert c == 1, c

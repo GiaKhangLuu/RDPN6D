@@ -99,21 +99,14 @@ def transform_instance_annotations(annotation, transforms, image_size, *, keypoi
 
     return annotation
 
-
-def build_gdrn_augmentation(cfg, is_train):
+def build_gdrn_augmentation(min_size, max_size, sample_style, is_train):
     """Create a list of :class:`Augmentation` from config. when training 6d
     pose, cannot flip.
 
     Returns:
         list[Augmentation]
     """
-    if is_train:
-        min_size = cfg.INPUT.MIN_SIZE_TRAIN
-        max_size = cfg.INPUT.MAX_SIZE_TRAIN
-        sample_style = cfg.INPUT.MIN_SIZE_TRAIN_SAMPLING
-    else:
-        min_size = cfg.INPUT.MIN_SIZE_TEST
-        max_size = cfg.INPUT.MAX_SIZE_TEST
+    if not is_train:
         sample_style = "choice"
     if sample_style == "range":
         assert len(min_size) == 2, "more than 2 ({}) min_size(s) are provided for ranges".format(
@@ -125,7 +118,6 @@ def build_gdrn_augmentation(cfg, is_train):
         logger.info("Augmentations used in training: " + str(augmentation))
     return augmentation
 
-
 class GDRN_DatasetFromList(Base_DatasetFromList):
     """NOTE: we can also use the default DatasetFromList and
     implement a similar custom DataMapper,
@@ -134,7 +126,16 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
     Wrap a list to a torch Dataset. It produces elements of the list as data.
     """
 
-    def __init__(self, cfg, split, lst: list, copy: bool = True, serialize: bool = True, flatten=True):
+    def __init__(
+        self, 
+        dataset_dicts, 
+        augmentation,
+        split, 
+        copy: bool = True, 
+        serialize: bool = True, 
+        flatten=True,
+        **kwargs
+    ):
         """
         Args:
             lst (list): a list which contains elements to produce.
@@ -145,23 +146,68 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                 enabled, data loader workers can use shared RAM from master
                 process instead of making a copy.
         """
-        self.augmentation = build_gdrn_augmentation(
-            cfg, is_train=(split == "train"))
-        if cfg.INPUT.COLOR_AUG_PROB > 0 and cfg.INPUT.COLOR_AUG_TYPE.lower() == "ssd":
+        assert split in ['train', 'test'], "split should be 'train' or 'test'"
+
+        if split == 'train':
+            dataset_dicts = filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=kwargs.get("filter_visib_thr"))
+
+        if split == 'test':
+            if kwargs.get("load_dets_test"):  
+                det_files = kwargs.get("det_files_test")
+                assert len(dataset_dicts.names[0]) == len(det_files)
+                load_detections_into_dataset(
+                    dataset_dicts.names[0],
+                    dataset_dicts,
+                    det_file=det_files[0],
+                    top_k_per_obj=kwargs.get("det_topk_per_obj"),
+                    score_thr=kwargs.get("det_thr"),
+                    train_objs=kwargs.get("train_objs")
+                )
+                if kwargs.get("filter_empty_dets"):
+                    dataset_dicts = filter_empty_dets(dataset_dicts)
+
+        self.dataset_dicts = dataset_dicts
+        lst = self.dataset_dicts
+        self.augmentation = augmentation
+        if kwargs.get("color_aug_prob") > 0 and kwargs.get("color_aug_type").lower() == "ssd":
             self.augmentation.append(
-                ColorAugSSDTransform(img_format=cfg.INPUT.FORMAT))
+                ColorAugSSDTransform(img_format=kwargs.get("input_format"))) 
             logging.getLogger(__name__).info(
                 "Color augmnetation used in training: " + str(self.augmentation[-1]))
         # fmt: off
-        self.img_format = cfg.INPUT.FORMAT  # default BGR
-        self.with_depth = cfg.INPUT.WITH_DEPTH
-        self.aug_depth = cfg.INPUT.AUG_DEPTH
+        self.img_format = kwargs.get("input_format")  # default BGR
+        self.with_depth = kwargs.get("input_with_depth")
+        self.aug_depth = kwargs.get("aug_depth")
         # NOTE: color augmentation config
-        self.color_aug_prob = cfg.INPUT.COLOR_AUG_PROB
-        self.color_aug_type = cfg.INPUT.COLOR_AUG_TYPE
-        self.color_aug_code = cfg.INPUT.COLOR_AUG_CODE
+        self.color_aug_prob = kwargs.get("color_aug_prob")
+        self.color_aug_type = kwargs.get("color_aug_type")
+        self.color_aug_code = kwargs.get("color_aug_code")
+
+        self.rot_head_num_regions = kwargs.get("rot_head_num_regions")
+        self.rot_head_xyz_loss_type = kwargs.get("rot_head_xyz_loss_type")
+        self.rot_head_xyz_bin = kwargs.get("rot_head_xyz_bin")
+        self.rot_head_xyz_loss_mask_gt = kwargs.get("rot_head_xyz_loss_mask_gt")
+
+        self.pnp_net_num_pm_points = kwargs.get("pnp_net_num_pm_points")
+        self.pnp_net_rot_type = kwargs.get("pnp_net_rot_type")
+
+        self.input_res = kwargs.get("input_res") 
+        self.output_res = kwargs.get("output_res")
+
+        self.test_bbox_type = kwargs.get("test_bbox_type")
+        self.dzi_pad_scale = kwargs.get("dzi_pad_scale")
+        self.dzi_type = kwargs.get("dzi_type")
+        self.dzi_scale_ratio = kwargs.get("dzi_scale_ratio")
+        self.dzi_shift_ratio = kwargs.get("dzi_shift_ratio")
+        self.train_vis = kwargs.get("train_vis")
+
+        self.pixel_mean = kwargs.get("pixel_mean")  
+        self.pixel_std = kwargs.get("pixel_std")
+
+        self.smooth_xyz = kwargs.get("smooth_xyz")
+        self.cdpn_name = kwargs.get("cdpn_name")
+
         # fmt: on
-        self.cfg = cfg
         self.cov = []
         self.mean = []
         self.min = []
@@ -224,8 +270,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         ref_key = dset_meta.ref_key
         data_ref = ref.__dict__[ref_key]
         objs = dset_meta.objs
-        cfg = self.cfg
-        num_fps_points = cfg.MODEL.CDPN.ROT_HEAD.NUM_REGIONS
+        num_fps_points = self.rot_head_num_regions
         cur_fps_points = {}
         loaded_fps_points = data_ref.get_fps_points()
         for i, obj_name in enumerate(objs):
@@ -248,7 +293,6 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         ref_key = dset_meta.ref_key
         data_ref = ref.__dict__[ref_key]
         objs = dset_meta.objs
-        cfg = self.cfg
 
         cur_model_points = {}
         num = np.inf
@@ -261,7 +305,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
             if pts.shape[0] < num:
                 num = pts.shape[0]
 
-        num = min(num, cfg.MODEL.CDPN.PNP_NET.NUM_PM_POINTS)
+        num = min(num, self.pnp_net_num_pm_points)  
         for i in range(len(cur_model_points)):
             keep_idx = np.arange(num)
             np.random.shuffle(keep_idx)  # random sampling
@@ -286,7 +330,6 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
 
         data_ref = ref.__dict__[ref_key]
         objs = dset_meta.objs
-        cfg = self.cfg
 
         cur_extents = {}
         for i, obj_name in enumerate(objs):
@@ -316,7 +359,6 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         ref_key = dset_meta.ref_key
         data_ref = ref.__dict__[ref_key]
         objs = dset_meta.objs
-        cfg = self.cfg
 
         cur_sym_infos = {}
         loaded_models_info = data_ref.get_models_info()
@@ -337,9 +379,6 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
 
     def read_data(self, dataset_dict):
         """load image and annos random shift & scale bbox; crop, rescale."""
-        cfg = self.cfg
-        r_head_cfg = cfg.MODEL.CDPN.ROT_HEAD
-        pnp_net_cfg = cfg.MODEL.CDPN.PNP_NET
 
         # it will be modified by code below
         dataset_dict = copy.deepcopy(dataset_dict)
@@ -393,8 +432,8 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
             K = dataset_dict["cam"].astype("float32")
             dataset_dict["cam"] = torch.as_tensor(K)
 
-        input_res = cfg.MODEL.CDPN.BACKBONE.INPUT_RES
-        out_res = cfg.MODEL.CDPN.BACKBONE.OUTPUT_RES
+        input_res = self.input_res
+        out_res = self.output_res
 
         # CHW -> HWC
         coord_2d = get_2d_coord_np(
@@ -404,7 +443,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         if self.split != "train":
 
             # don't load annotations at test time
-            test_bbox_type = cfg.TEST.TEST_BBOX_TYPE
+            test_bbox_type = self.test_bbox_type
             if test_bbox_type == "gt":
                 bbox_key = "bbox"
             else:
@@ -477,7 +516,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                 bbox_center = np.array([0.5 * (x1 + x2), 0.5 * (y1 + y2)])
                 bw = max(x2 - x1, 1)
                 bh = max(y2 - y1, 1)
-                scale = max(bh, bw) * cfg.INPUT.DZI_PAD_SCALE
+                scale = max(bh, bw) * self.dzi_pad_scale
                 scale = min(scale, max(im_H, im_W)) * 1.0
 
                 roi_infos["bbox_center"].append(bbox_center.astype("float32"))
@@ -487,7 +526,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                 roi_infos["resize_ratio"].append(out_res / scale)
 
                 # load xyz =======================================================
-                if cfg.TRAIN.VIS:
+                if self.train_vis:
                     mask_xyz_interp = cv2.INTER_LINEAR
                 else:
                     mask_xyz_interp = cv2.INTER_NEAREST
@@ -523,7 +562,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                     image, bbox_center, scale, input_res, interpolation=cv2.INTER_LINEAR
                 ).transpose(2, 0, 1)
 
-                roi_img = self.normalize_image(cfg, roi_img)
+                roi_img = self.normalize_image(roi_img)
                 # depth xyz-----------------------------------------
 
                 resize_ratio = out_res / scale
@@ -554,6 +593,8 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                 offset_matrix = np.zeros((3, 3))
                 offset_matrix[:2, :] = H
                 offset_matrix[2][2] = 1
+
+                dataset_dict["trans_mat"] = torch.as_tensor(offset_matrix)
 
                 if compute_cov:
                     depth_img2 = depth_img2
@@ -660,10 +701,10 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         # NOTE: full mask
         mask_obj = ((xyz[:, :, 0] != 0) | (xyz[:, :, 1] != 0) | (
             xyz[:, :, 2] != 0)).astype(np.bool).astype(np.float32)
-        if cfg.INPUT.SMOOTH_XYZ:
+        if self.smooth_xyz:
             xyz = self.smooth_xyz(xyz)
 
-        if cfg.TRAIN.VIS:
+        if self.train_vis:
             xyz = self.smooth_xyz(xyz)
 
         # override bbox info using xyz_infos
@@ -677,7 +718,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
 
         # augment bbox ===================================================
         bbox_xyxy = anno["bbox"]
-        bbox_center, scale = self.aug_bbox(cfg, bbox_xyxy, im_H, im_W)
+        bbox_center, scale = self.aug_bbox(bbox_xyxy, im_H, im_W)
         bw = max(bbox_xyxy[2] - bbox_xyxy[0], 1)
         bh = max(bbox_xyxy[3] - bbox_xyxy[1], 1)
         # add mask ----------------------------------------
@@ -743,6 +784,8 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         offset_matrix[:2, :] = H
         offset_matrix[2][2] = 1
         newCameraK = np.matmul(offset_matrix, K)
+
+        dataset_dict["trans_mat"] = torch.as_tensor(offset_matrix)
 
         cam_cx = newCameraK[0][2]
         cam_cy = newCameraK[1][2]
@@ -812,7 +855,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         roi_img = crop_resize_by_warp_affine(
             image, bbox_center, scale, input_res, interpolation=cv2.INTER_LINEAR
         ).transpose(2, 0, 1)
-        roi_img = self.normalize_image(cfg, roi_img)
+        roi_img = self.normalize_image(roi_img)
 
         # * Regnet
         regnet = False
@@ -841,7 +884,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         else:
             mask_trunc = mask_visib * mask_trunc.astype("float32")
 
-        if cfg.TRAIN.VIS:
+        if self.train_vis:
             mask_xyz_interp = cv2.INTER_LINEAR
         else:
             mask_xyz_interp = cv2.INTER_NEAREST
@@ -877,7 +920,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         # roi_region  cv2.imwrite('roi_region.png', region.astype(np.int) *255 / (region.astype(np.int).max() - region.astype(np.int).min()))
         ##
         # roi_delta cv2.imwrite('roi_delta.png', delta *255 / (delta.max() - delta.min()))
-        if r_head_cfg.NUM_REGIONS > 1:
+        if self.rot_head_num_regions > 1:
             fps_points = self._get_fps_points(dataset_name)[roi_cls]
             roi_region, delta = xyz_to_region(roi_xyz, fps_points)  # HW
             R, t = inst_infos["pose"][:, :3], inst_infos["pose"][:, 3]
@@ -902,7 +945,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         roi_xyz[2] = roi_xyz[2] / roi_extent[2] + 0.5
 
         # convert target to int for cls
-        if ("CE" in r_head_cfg.XYZ_LOSS_TYPE) or ("cls" in cfg.MODEL.CDPN.NAME):
+        if ("CE" in self.rot_head_xyz_loss_type) or ("cls" in self.cdpn_name):
             # assume roi_xyz has been normalized in [0, 1]
             roi_xyz_bin = np.zeros_like(roi_xyz)
             roi_x_norm = roi_xyz[0]
@@ -910,32 +953,32 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
             roi_x_norm[roi_x_norm > 0.999999] = 0.999999
             # [0, BIN-1]
             roi_xyz_bin[0] = np.asarray(
-                roi_x_norm * r_head_cfg.XYZ_BIN, dtype=np.uint8)
+                roi_x_norm * self.rot_head_xyz_bin, dtype=np.uint8)
 
             roi_y_norm = roi_xyz[1]
             roi_y_norm[roi_y_norm < 0] = 0
             roi_y_norm[roi_y_norm > 0.999999] = 0.999999
             roi_xyz_bin[1] = np.asarray(
-                roi_y_norm * r_head_cfg.XYZ_BIN, dtype=np.uint8)
+                roi_y_norm * self.rot_head_xyz_bin, dtype=np.uint8)
 
             roi_z_norm = roi_xyz[2]
             roi_z_norm[roi_z_norm < 0] = 0
             roi_z_norm[roi_z_norm > 0.999999] = 0.999999
             roi_xyz_bin[2] = np.asarray(
-                roi_z_norm * r_head_cfg.XYZ_BIN, dtype=np.uint8)
+                roi_z_norm * self.rot_head_xyz_bin, dtype=np.uint8)
 
             # the last bin is for bg
             roi_masks = {"trunc": roi_mask_trunc,
                          "visib": roi_mask_visib, "obj": roi_mask_obj}
-            roi_mask_xyz = roi_masks[r_head_cfg.XYZ_LOSS_MASK_GT]
-            roi_xyz_bin[0][roi_mask_xyz == 0] = r_head_cfg.XYZ_BIN
-            roi_xyz_bin[1][roi_mask_xyz == 0] = r_head_cfg.XYZ_BIN
-            roi_xyz_bin[2][roi_mask_xyz == 0] = r_head_cfg.XYZ_BIN
+            roi_mask_xyz = roi_masks[self.rot_head_xyz_loss_mask_gt]
+            roi_xyz_bin[0][roi_mask_xyz == 0] = self.rot_head_xyz_bin
+            roi_xyz_bin[1][roi_mask_xyz == 0] = self.rot_head_xyz_bin
+            roi_xyz_bin[2][roi_mask_xyz == 0] = self.rot_head_xyz_bin
 
-            if "CE" in r_head_cfg.XYZ_LOSS_TYPE:
+            if "CE" in self.rot_head_xyz_loss_type:  
                 dataset_dict["roi_xyz_bin"] = torch.as_tensor(
                     roi_xyz_bin.astype("uint8")).contiguous()
-            if "/" in r_head_cfg.XYZ_LOSS_TYPE and len(r_head_cfg.XYZ_LOSS_TYPE.split("/")[1]) > 0:
+            if "/" in self.rot_head_xyz_loss_type and len(self.rot_head_xyz_loss_type.split("/")[1]) > 0:
                 dataset_dict["roi_xyz"] = torch.as_tensor(
                     roi_xyz.astype("float32")).contiguous()
         else:
@@ -949,36 +992,36 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         allo_quat = mat2quat(allo_pose[:3, :3])
 
         # ====== actually not needed ==========
-        if pnp_net_cfg.ROT_TYPE == "allo_quat":
+        if self.pnp_net_rot_type == "allo_quat":
             dataset_dict["allo_quat"] = torch.as_tensor(
                 allo_quat.astype("float32"))
-        elif pnp_net_cfg.ROT_TYPE == "ego_quat":
+        elif self.pnp_net_rot_type == "ego_quat":
             dataset_dict["ego_quat"] = torch.as_tensor(quat.astype("float32"))
         # rot6d
-        elif pnp_net_cfg.ROT_TYPE == "ego_rot6d":
+        elif self.pnp_net_rot_type == "ego_rot6d":
             dataset_dict["ego_rot6d"] = torch.as_tensor(
                 mat_to_ortho6d_np(pose[:3, :3].astype("float32")))
-        elif pnp_net_cfg.ROT_TYPE == "allo_rot6d":
+        elif self.pnp_net_rot_type == "allo_rot6d":
             dataset_dict["allo_rot6d"] = torch.as_tensor(
                 mat_to_ortho6d_np(allo_pose[:3, :3].astype("float32")))
         # log quat
-        elif pnp_net_cfg.ROT_TYPE == "ego_log_quat":
+        elif self.pnp_net_rot_type == "ego_log_quat":
             dataset_dict["ego_log_quat"] = quaternion_lf.qlog(
                 torch.as_tensor(quat.astype("float32"))[None])[0]
-        elif pnp_net_cfg.ROT_TYPE == "allo_log_quat":
+        elif self.pnp_net_rot_type == "allo_log_quat":
             dataset_dict["allo_log_quat"] = quaternion_lf.qlog(
                 torch.as_tensor(allo_quat.astype("float32"))[None])[0]
         # lie vec
-        elif pnp_net_cfg.ROT_TYPE == "ego_lie_vec":
+        elif self.pnp_net_rot_type == "ego_lie_vec":
             dataset_dict["ego_lie_vec"] = lie_algebra.rot_to_lie_vec(
                 torch.as_tensor(pose[:3, :3].astype("float32")[None])
             )[0]
-        elif pnp_net_cfg.ROT_TYPE == "allo_lie_vec":
+        elif self.pnp_net_rot_type == "allo_lie_vec":
             dataset_dict["allo_lie_vec"] = lie_algebra.rot_to_lie_vec(
                 torch.as_tensor(allo_pose[:3, :3].astype("float32"))[None]
             )[0]
         else:
-            raise ValueError(f"Unknown rot type: {pnp_net_cfg.ROT_TYPE}")
+            raise ValueError(f"Unknown rot type: {self.pnp_net_rot_type}")
         dataset_dict["ego_rot"] = torch.as_tensor(
             pose[:3, :3].astype("float32"))
         dataset_dict["trans"] = torch.as_tensor(
@@ -1041,8 +1084,14 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
                 continue
             return processed_data
 
-
-def build_gdrn_train_loader(cfg, dataset_names):
+def build_gdrn_train_loader(
+    dataset,
+    sampler_name="TrainingSampler",
+    repeat_threshold=0.0,
+    img_per_batch=24,
+    aspect_ratio_grouping=False, 
+    num_workers=4
+):
     """A data loader is created by the following steps:
 
     1. Use the dataset names in config to query :class:`DatasetCatalog`, and obtain a list of dicts.
@@ -1059,20 +1108,6 @@ def build_gdrn_train_loader(cfg, dataset_names):
     Returns:
         an infinite iterator of training data
     """
-    dataset_dicts = get_detection_dataset_dicts(
-        dataset_names,
-        filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
-        min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE if cfg.MODEL.KEYPOINT_ON else 0,
-        proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN if cfg.MODEL.LOAD_PROPOSALS else None,
-    )
-
-    dataset_dicts = filter_invalid_in_dataset_dicts(
-        dataset_dicts, visib_thr=cfg.DATALOADER.FILTER_VISIB_THR)
-
-    dataset = GDRN_DatasetFromList(
-        cfg, split="train", lst=dataset_dicts, copy=False)
-
-    sampler_name = cfg.DATALOADER.SAMPLER_TRAIN
     logger = logging.getLogger(__name__)
     logger.info("Using training sampler {}".format(sampler_name))
     # TODO avoid if-else?
@@ -1080,7 +1115,7 @@ def build_gdrn_train_loader(cfg, dataset_names):
         sampler = TrainingSampler(len(dataset))
     elif sampler_name == "RepeatFactorTrainingSampler":
         repeat_factors = RepeatFactorTrainingSampler.repeat_factors_from_category_frequency(
-            dataset_dicts, cfg.DATALOADER.REPEAT_THRESHOLD
+            dataset.dataset_dicts, repeat_threshold 
         )
         sampler = RepeatFactorTrainingSampler(repeat_factors)
     else:
@@ -1088,13 +1123,16 @@ def build_gdrn_train_loader(cfg, dataset_names):
     return my_build_batch_data_loader(
         dataset,
         sampler,
-        cfg.SOLVER.IMS_PER_BATCH,
-        aspect_ratio_grouping=cfg.DATALOADER.ASPECT_RATIO_GROUPING,
-        num_workers=cfg.DATALOADER.NUM_WORKERS,
+        img_per_batch,
+        aspect_ratio_grouping=aspect_ratio_grouping,
+        num_workers=num_workers
     )
 
 
-def build_gdrn_test_loader(cfg, dataset_name, train_objs=None):
+def build_gdrn_test_loader(
+    dataset,
+    num_workers
+):
     """Similar to `build_detection_train_loader`. But this function uses the
     given `dataset_name` argument (instead of the names in cfg), and uses batch
     size 1.
@@ -1107,32 +1145,6 @@ def build_gdrn_test_loader(cfg, dataset_name, train_objs=None):
         DataLoader: a torch DataLoader, that loads the given detection
         dataset, with test-time transformation and batching.
     """
-    dataset_dicts = get_detection_dataset_dicts(
-        [dataset_name],
-        filter_empty=False,
-        proposal_files=[cfg.DATASETS.PROPOSAL_FILES_TEST[list(
-            cfg.DATASETS.TEST).index(dataset_name)]]
-        if cfg.MODEL.LOAD_PROPOSALS
-        else None,
-    )
-
-    # load test detection results
-    if cfg.MODEL.LOAD_DETS_TEST:
-        det_files = cfg.DATASETS.DET_FILES_TEST
-        assert len(cfg.DATASETS.TEST) == len(det_files)
-        load_detections_into_dataset(
-            dataset_name,
-            dataset_dicts,
-            det_file=det_files[cfg.DATASETS.TEST.index(dataset_name)],
-            top_k_per_obj=cfg.DATASETS.DET_TOPK_PER_OBJ,
-            score_thr=cfg.DATASETS.DET_THR,
-            train_objs=train_objs,
-        )
-        if cfg.DATALOADER.FILTER_EMPTY_DETS:
-            dataset_dicts = filter_empty_dets(dataset_dicts)
-
-    dataset = GDRN_DatasetFromList(
-        cfg, split="test", lst=dataset_dicts, flatten=False)
 
     sampler = InferenceSampler(len(dataset))
     # Always use 1 image per worker during inference since this is the
@@ -1140,7 +1152,6 @@ def build_gdrn_test_loader(cfg, dataset_name, train_objs=None):
     batch_sampler = torch.utils.data.sampler.BatchSampler(
         sampler, 1, drop_last=False)
 
-    num_workers = cfg.DATALOADER.NUM_WORKERS
     # Horovod: limit # of CPU threads to be used per worker.
     # if num_workers > 0:
     #     torch.set_num_threads(num_workers)

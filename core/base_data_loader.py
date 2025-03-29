@@ -111,25 +111,25 @@ class Base_DatasetFromList(data.Dataset):
             dataset_dict = self._lst[idx]
         return dataset_dict
 
-    def normalize_image(self, cfg, image):
+    def normalize_image(self, image):
         # image: CHW format
-        pixel_mean = np.array(cfg.MODEL.PIXEL_MEAN).reshape(-1, 1, 1)
-        pixel_std = np.array(cfg.MODEL.PIXEL_STD).reshape(-1, 1, 1)
+        pixel_mean = np.array(self.pixel_mean).reshape(-1, 1, 1)  
+        pixel_std = np.array(self.pixel_std).reshape(-1, 1, 1) 
         return (image - pixel_mean) / pixel_std
 
-    def aug_bbox(self, cfg, bbox_xyxy, im_H, im_W):
+    def aug_bbox(self, bbox_xyxy, im_H, im_W):
         x1, y1, x2, y2 = bbox_xyxy.copy()
         cx = 0.5 * (x1 + x2)
         cy = 0.5 * (y1 + y2)
         bh = y2 - y1
         bw = x2 - x1
-        if cfg.INPUT.DZI_TYPE.lower() == "uniform":
-            scale_ratio = 1 + cfg.INPUT.DZI_SCALE_RATIO * (2 * np.random.random_sample() - 1)  # [1-0.25, 1+0.25]
-            shift_ratio = cfg.INPUT.DZI_SHIFT_RATIO * (2 * np.random.random_sample(2) - 1)  # [-0.25, 0.25]
+        if self.dzi_type.lower() == "uniform":  
+            scale_ratio = 1 + self.dzi_scale_ratio * (2 * np.random.random_sample() - 1)  # [1-0.25, 1+0.25]
+            shift_ratio = self.dzi_shift_ratio * (2 * np.random.random_sample(2) - 1)  # [-0.25, 0.25]
             bbox_center = np.array([cx + bw * shift_ratio[0], cy + bh * shift_ratio[1]])  # (h/2, w/2)
-            scale = max(y2 - y1, x2 - x1) * scale_ratio * cfg.INPUT.DZI_PAD_SCALE
+            scale = max(y2 - y1, x2 - x1) * scale_ratio * self.dzi_pad_scale
             # import ipdb; ipdb.set_trace()
-        elif cfg.INPUT.DZI_TYPE.lower() == "roi10d":
+        elif self.dzi_type.lower() == "roi10d":
             # shift (x1,y1), (x2,y2) by 15% in each direction
             _a = -0.15
             _b = 0.15
@@ -142,8 +142,8 @@ class Base_DatasetFromList(data.Dataset):
             y1 = min(max(y1, 0), im_H)
             y2 = min(max(y2, 0), im_H)
             bbox_center = np.array([0.5 * (x1 + x2), 0.5 * (y1 + y2)])
-            scale = max(y2 - y1, x2 - x1) * cfg.INPUT.DZI_PAD_SCALE
-        elif cfg.INPUT.DZI_TYPE.lower() == "truncnorm":
+            scale = max(y2 - y1, x2 - x1) * self.dzi_pad_scale
+        elif self.dzi_type.lower() == "truncnorm":
             raise NotImplementedError("DZI truncnorm not implemented yet.")
         else:
             bbox_center = np.array([cx, cy])  # (w/2, h/2)

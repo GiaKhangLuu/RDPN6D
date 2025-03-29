@@ -16,7 +16,7 @@ from ..losses.coor_cross_entropy import CrossEntropyHeatmapLoss
 from ..losses.l2_loss import L2Loss
 from ..losses.pm_loss import PyPMLoss
 from ..losses.rot_loss import angular_distance, rot_l2_loss
-from .cdpn_rot_head_region import RotWithRegionHead
+from .cdpn_rot_head_region import RotWithRegionHead, get_xyz_mask_region_out_dim
 from .cdpn_trans_head import TransHeadNet
 
 # pnp net variants
@@ -52,9 +52,56 @@ def xyz_to_region(xyz_crop, fps_points, pred_region, mask):
 
 
 class GDRN(nn.Module):
-    def __init__(self, cfg, backbone, rot_head_net, trans_head_net=None, pnp_net=None):
+    def __init__(
+            self, 
+            backbone, 
+            rot_head_net, 
+            trans_head_net=None, 
+            pnp_net=None,
+            concat=False,
+            xyz_loss_type="L1",  # L1 | CE_coor
+            mask_loss_type="L1",  # L1 | BCE | CE
+            backbone_out_res=64,
+            use_pnp_in_test=False,
+            xyz_bin=64,
+            num_regions=32,
+            xyz_loss_mask_gt="visib",  # trunc | visib | obj,
+            xyz_lw=1.0,
+            mask_loss_gt="trunc",  # trunc | visib | gt
+            mask_lw=1.0,
+            region_loss_type="CE",  # CE
+            region_loss_mask_gt="visib",  # trunc | visib | obj
+            region_lw=1.0,
+            with_2d_coord=True,
+            region_attention=True,
+            r_only=False,
+            trans_type="centroid_z",  
+            z_type="ABS",  
+            pm_lw=1.0,
+            pm_loss_type="L1",  # L1 | Smooth_L1
+            pm_smooth_l1_beta=1.0,
+            pm_norm_by_extent=True,
+            pm_loss_sym=False,  # use symmetric PM loss
+            pm_disentangle_t=False,  # disentangle R/T
+            pm_disentangle_z=False,  # disentangle R/xy/z
+            pm_t_use_points=False,
+            pm_r_only=False,
+            rot_lw=1.0,
+            rot_loss_type="angular",  # angular | L2
+            centroid_lw=1.0,
+            centroid_loss_type="L1",
+            z_lw=1.0,
+            z_loss_type="L1",
+            trans_lw=1.0,
+            trans_loss_disentangle=True,
+            trans_loss_type="L1",
+            bind_lw=1.0,
+            bind_loss_type="L1",
+            use_mtl=False,
+            device="cuda",
+            weights=None,
+        ):
         super().__init__()
-        assert cfg.MODEL.CDPN.NAME == "GDRN", cfg.MODEL.CDPN.NAME
         self.backbone = backbone
 
         self.rot_head_net = rot_head_net
@@ -62,10 +109,53 @@ class GDRN(nn.Module):
 
         self.trans_head_net = trans_head_net
 
-        self.cfg = cfg
-        self.concat = cfg.MODEL.CDPN.ROT_HEAD.ROT_CONCAT
+        self.concat = concat
+        self.xyz_loss_type = xyz_loss_type
+        self.mask_loss_type = mask_loss_type
+        self.backbone_out_res = backbone_out_res
+        self.use_pnp_in_test = use_pnp_in_test 
+        self.xyz_loss_mask_gt = xyz_loss_mask_gt
+        self.xyz_lw = xyz_lw
+        self.mask_loss_gt = mask_loss_gt
+        self.mask_lw = mask_lw   
+        self.region_loss_type = region_loss_type
+        self.region_loss_mask_gt = region_loss_mask_gt
+        self.region_lw = region_lw
+        self.with_2d_coord = with_2d_coord
+        self.region_attention = region_attention
+        self.r_only = r_only
+        self.trans_type = trans_type
+        self.z_type = z_type
+        self.pm_lw = pm_lw
+        self.pm_loss_type = pm_loss_type
+        self.pm_smooth_l1_beta = pm_smooth_l1_beta
+        self.pm_norm_by_extent = pm_norm_by_extent
+        self.pm_loss_sym = pm_loss_sym
+        self.pm_disentangle_t = pm_disentangle_t
+        self.pm_disentangle_z = pm_disentangle_z
+        self.pm_t_use_points = pm_t_use_points
+        self.pm_r_only = pm_r_only
+        self.rot_lw = rot_lw
+        self.rot_loss_type = rot_loss_type
+        self.centroid_lw = centroid_lw
+        self.centroid_loss_type = centroid_loss_type
+        self.z_lw = z_lw
+        self.z_loss_type = z_loss_type
+        self.trans_lw = trans_lw
+        self.trans_loss_disentangle = trans_loss_disentangle
+        self.trans_loss_type = trans_loss_type
+        self.bind_lw = bind_lw
+        self.bind_loss_type = bind_loss_type
+        self.use_mtl = use_mtl
+        self.device = device
+        self.weights = weights
+
         self.r_out_dim, self.mask_out_dim, self.region_out_dim = get_xyz_mask_region_out_dim(
-            cfg)
+            xyz_loss_type=xyz_loss_type,
+            mask_loss_type=mask_loss_type,
+            xyz_bin=xyz_bin,
+            num_regions=num_regions,
+        )
         self.consistent = 0
         self.item = 0
         # uncertainty multi-task loss weighting
@@ -73,7 +163,7 @@ class GDRN(nn.Module):
         # a = log(sigma^2)
         # L*exp(-a) + a  or  L*exp(-a) + log(1+exp(a))
         # self.log_vars = nn.Parameter(torch.tensor([0, 0], requires_grad=True, dtype=torch.float32).cuda())
-        if cfg.MODEL.CDPN.USE_MTL:
+        if self.use_mtl:  
             self.loss_names = [
                 "mask",
                 "coor_x",
@@ -132,11 +222,6 @@ class GDRN(nn.Module):
         do_loss=False,
         fps=None,
     ):
-        cfg = self.cfg
-        r_head_cfg = cfg.MODEL.CDPN.ROT_HEAD
-        t_head_cfg = cfg.MODEL.CDPN.TRANS_HEAD
-        pnp_net_cfg = cfg.MODEL.CDPN.PNP_NET
-
         # x.shape [bs, 3, 256, 256]
         if self.concat:
             features, x_f64, x_f32, x_f16 = self.backbone(
@@ -158,11 +243,11 @@ class GDRN(nn.Module):
 
         device = x.device
         bs = x.shape[0]
-        num_classes = r_head_cfg.NUM_CLASSES
+        num_classes = self.rot_head_net.num_classes
 
-        out_res = cfg.MODEL.CDPN.BACKBONE.OUTPUT_RES
+        out_res = self.backbone_out_res
 
-        if r_head_cfg.ROT_CLASS_AWARE:
+        if self.rot_head_net.rot_class_aware: 
             assert roi_classes is not None
             coor_x = coor_x.view(
                 bs, num_classes, self.r_out_dim // 3, out_res, out_res)
@@ -174,13 +259,13 @@ class GDRN(nn.Module):
                 bs, num_classes, self.r_out_dim // 3, out_res, out_res)
             coor_z = coor_z[torch.arange(bs).to(device), roi_classes]
 
-        if r_head_cfg.MASK_CLASS_AWARE:
+        if self.rot_head_net.mask_class_aware:  
             assert roi_classes is not None
             mask = mask.view(
                 bs, num_classes, self.mask_out_dim, out_res, out_res)
             mask = mask[torch.arange(bs).to(device), roi_classes]
 
-        if r_head_cfg.REGION_CLASS_AWARE:
+        if self.rot_head_net.region_class_aware:  
             assert roi_classes is not None
             region = region.view(
                 bs, num_classes, self.region_out_dim, out_res, out_res)
@@ -198,7 +283,7 @@ class GDRN(nn.Module):
         else:
             coor_feat = torch.cat([coor_x, coor_y, coor_z], dim=1)  # BCHW
 
-        if pnp_net_cfg.WITH_2D_COORD:
+        if self.with_2d_coord:  
             assert roi_coord_2d is not None
             coor_feat = torch.cat([coor_feat, roi_coord_2d], dim=1)
 
@@ -218,8 +303,8 @@ class GDRN(nn.Module):
         coor_feat = torch.cat([coor_feat, region_fps], dim=1)
         # * new end
         mask_atten = None
-        if pnp_net_cfg.MASK_ATTENTION != "none":
-            mask_atten = get_mask_prob(cfg, mask)
+        if self.pnp_net.mask_attention_type != "none":  
+            mask_atten = get_mask_prob(self.mask_loss_type, mask)
         check_consistent = False
         # * new
         if check_consistent:
@@ -229,17 +314,17 @@ class GDRN(nn.Module):
 
         # * new end
         region_atten = None
-        if pnp_net_cfg.REGION_ATTENTION:
+        if self.region_attention:  
             region_atten = region_softmax
 
         pred_rot_, pred_t_ = self.pnp_net(
             coor_feat, region=region_atten, extents=roi_extents, mask_attention=mask_atten
         )
-        if pnp_net_cfg.R_ONLY:  # override trans pred
+        if self.r_only:  # override trans pred  
             pred_t_ = self.trans_head_net(features)
 
         # convert pred_rot to rot mat -------------------------
-        rot_type = pnp_net_cfg.ROT_TYPE
+        rot_type = self.pnp_net.rot_type
         if rot_type in ["ego_quat", "allo_quat"]:
             pred_rot_m = quat2mat_torch(pred_rot_)
         elif rot_type in ["ego_log_quat", "allo_log_quat"]:
@@ -251,7 +336,7 @@ class GDRN(nn.Module):
         else:
             raise RuntimeError(f"Wrong pred_rot_ dim: {pred_rot_.shape}")
         # convert pred_rot_m and pred_t to ego pose -----------------------------
-        if pnp_net_cfg.TRANS_TYPE == "centroid_z":
+        if self.trans_type == "centroid_z":  
             pred_ego_rot, pred_trans = pose_from_pred_centroid_z(
                 pred_rot_m,
                 pred_centroids=pred_t_[:, :2],
@@ -261,12 +346,12 @@ class GDRN(nn.Module):
                 resize_ratios=resize_ratios,
                 roi_whs=roi_whs,
                 eps=1e-4,
-                is_allo="allo" in pnp_net_cfg.ROT_TYPE,
-                z_type=pnp_net_cfg.Z_TYPE,
+                is_allo="allo" in rot_type,
+                z_type=self.z_type, 
                 # is_train=True
                 is_train=do_loss,  # TODO: sometimes we need it to be differentiable during test
             )
-        elif pnp_net_cfg.TRANS_TYPE == "centroid_z_abs":
+        elif self.trans_type == "centroid_z_abs":
             # abs 2d obj center and abs z
             pred_ego_rot, pred_trans = pose_from_pred_centroid_z_abs(
                 pred_rot_m,
@@ -274,24 +359,24 @@ class GDRN(nn.Module):
                 pred_z_vals=pred_t_[:, 2:3],  # must be [B, 1]
                 roi_cams=roi_cams,
                 eps=1e-4,
-                is_allo="allo" in pnp_net_cfg.ROT_TYPE,
+                is_allo="allo" in rot_type,
                 # is_train=True
                 is_train=do_loss,  # TODO: sometimes we need it to be differentiable during test
             )
-        elif pnp_net_cfg.TRANS_TYPE == "trans":
+        elif self.trans_type == "trans":
             # TODO: maybe denormalize trans
             pred_ego_rot, pred_trans = pose_from_pred(
-                pred_rot_m, pred_t_, eps=1e-4, is_allo="allo" in pnp_net_cfg.ROT_TYPE, is_train=do_loss
+                pred_rot_m, pred_t_, eps=1e-4, is_allo="allo" in rot_type, is_train=do_loss
             )
         else:
             raise ValueError(
-                f"Unknown pnp_net trans type: {pnp_net_cfg.TRANS_TYPE}")
+                f"Unknown pnp_net trans type: {self.trans_type}")
 
         if not do_loss:  # test
             out_dict = {"rot": pred_ego_rot, "trans": pred_trans}
             out_dict.update({"mask": mask, "coor_x": coor_x, "coor_y": coor_y,
                             "coor_z": coor_z, "region": region, "consistent_map": consistent_map})
-            if cfg.TEST.USE_PNP:
+            if self.use_pnp_in_test: 
                 # TODO: move the pnp/ransac inside forward
                 out_dict.update({"mask": mask, "coor_x": coor_x,
                                 "coor_y": coor_y, "coor_z": coor_z, "region": region})
@@ -329,7 +414,6 @@ class GDRN(nn.Module):
             }
 
             loss_dict = self.gdrn_loss(
-                cfg=self.cfg,
                 out_mask=mask,
                 gt_mask_trunc=gt_mask_trunc,
                 gt_mask_visib=gt_mask_visib,
@@ -354,7 +438,7 @@ class GDRN(nn.Module):
                 # roi_classes=roi_classes,
             )
 
-            if cfg.MODEL.CDPN.USE_MTL:
+            if self.use_mtl: 
                 for _name in self.loss_names:
                     if f"loss_{_name}" in loss_dict:
                         vis_dict[f"vis_lw/{_name}"] = torch.exp(-getattr(
@@ -372,7 +456,6 @@ class GDRN(nn.Module):
 
     def gdrn_loss(
         self,
-        cfg,
         out_mask,
         gt_mask_trunc,
         gt_mask_visib,
@@ -395,20 +478,15 @@ class GDRN(nn.Module):
         sym_infos=None,
         extents=None,
     ):
-        r_head_cfg = cfg.MODEL.CDPN.ROT_HEAD
-        t_head_cfg = cfg.MODEL.CDPN.TRANS_HEAD
-        pnp_net_cfg = cfg.MODEL.CDPN.PNP_NET
-
         loss_dict = {}
 
         gt_masks = {"trunc": gt_mask_trunc,
                     "visib": gt_mask_visib, "obj": gt_mask_obj}
 
         # rot xyz loss ----------------------------------
-        if not r_head_cfg.FREEZE:
-            xyz_loss_type = r_head_cfg.XYZ_LOSS_TYPE
-            gt_mask_xyz = gt_masks[r_head_cfg.XYZ_LOSS_MASK_GT]
-            if xyz_loss_type == "L1":
+        if not self.rot_head_net.freeze: 
+            gt_mask_xyz = gt_masks[self.xyz_loss_mask_gt] 
+            if self.xyz_loss_type == "L1":
                 loss_func = nn.L1Loss(reduction="sum")
                 loss_dict["loss_coor_x"] = loss_func(
                     out_x * gt_mask_xyz[:, None], gt_xyz[:,
@@ -422,7 +500,7 @@ class GDRN(nn.Module):
                     out_z * gt_mask_xyz[:, None], gt_xyz[:,
                                                          2:3] * gt_mask_xyz[:, None]
                 ) / gt_mask_xyz.sum().float().clamp(min=1.0)
-            elif xyz_loss_type == "CE_coor":
+            elif self.xyz_loss_type == "CE_coor":
                 gt_xyz_bin = gt_xyz_bin.long()
                 loss_func = CrossEntropyHeatmapLoss(
                     reduction="sum", weight=None)  # r_head_cfg.XYZ_BIN+1
@@ -440,15 +518,15 @@ class GDRN(nn.Module):
                 ) / gt_mask_xyz.sum().float().clamp(min=1.0)
             else:
                 raise NotImplementedError(
-                    f"unknown xyz loss type: {xyz_loss_type}")
-            loss_dict["loss_coor_x"] *= r_head_cfg.XYZ_LW
-            loss_dict["loss_coor_y"] *= r_head_cfg.XYZ_LW
-            loss_dict["loss_coor_z"] *= r_head_cfg.XYZ_LW
+                    f"unknown xyz loss type: {self.xyz_loss_type}")
+            loss_dict["loss_coor_x"] *= self.xyz_lw
+            loss_dict["loss_coor_y"] *= self.xyz_lw
+            loss_dict["loss_coor_z"] *= self.xyz_lw
 
         # mask loss ----------------------------------
-        if not r_head_cfg.FREEZE:
-            mask_loss_type = r_head_cfg.MASK_LOSS_TYPE
-            gt_mask = gt_masks[r_head_cfg.MASK_LOSS_GT]
+        if not self.rot_head_net.freeze: 
+            mask_loss_type = self.mask_loss_type
+            gt_mask = gt_masks[self.mask_loss_gt]  
             if mask_loss_type == "L1":
                 loss_dict["loss_mask"] = nn.L1Loss(
                     reduction="mean")(out_mask[:, 0, :, :], gt_mask)
@@ -461,12 +539,12 @@ class GDRN(nn.Module):
             else:
                 raise NotImplementedError(
                     f"unknown mask loss type: {mask_loss_type}")
-            loss_dict["loss_mask"] *= r_head_cfg.MASK_LW
+            loss_dict["loss_mask"] *=  self.mask_lw
 
         # roi region loss --------------------
-        if not r_head_cfg.FREEZE:
-            region_loss_type = r_head_cfg.REGION_LOSS_TYPE
-            gt_mask_region = gt_masks[r_head_cfg.REGION_LOSS_MASK_GT]
+        if not self.rot_head_net.freeze: 
+            region_loss_type = self.region_loss_type
+            gt_mask_region = gt_masks[self.region_loss_mask_gt] 
             if region_loss_type == "CE":
                 gt_region = gt_region.long()
                 loss_func = nn.CrossEntropyLoss(
@@ -476,27 +554,27 @@ class GDRN(nn.Module):
                     gt_mask_region[:, None], gt_region * gt_mask_region.long()
                 ) / gt_mask_region.sum().float().clamp(min=1.0)
                 loss_dict["loss_region_my"] = nn.L1Loss(reduction="mean")(
-                    gt_mask_visib, out_region[:, 0, :, :]) * r_head_cfg.REGION_LW
+                    gt_mask_visib, out_region[:, 0, :, :]) * self.region_lw
             else:
                 raise NotImplementedError(
                     f"unknown region loss type: {region_loss_type}")
-            loss_dict["loss_region"] *= r_head_cfg.REGION_LW
+            loss_dict["loss_region"] *= self.region_lw
 
         # point matching loss ---------------
-        if pnp_net_cfg.PM_LW > 0:
+        if self.pm_lw > 0:  
             assert (gt_points is not None) and (
                 gt_trans is not None) and (gt_rot is not None)
             loss_func = PyPMLoss(
-                loss_type=pnp_net_cfg.PM_LOSS_TYPE,
-                beta=pnp_net_cfg.PM_SMOOTH_L1_BETA,
+                loss_type=self.pm_loss_type, 
+                beta=self.pm_smooth_l1_beta,  
                 reduction="mean",
-                loss_weight=pnp_net_cfg.PM_LW,
-                norm_by_extent=pnp_net_cfg.PM_NORM_BY_EXTENT,
-                symmetric=pnp_net_cfg.PM_LOSS_SYM,
-                disentangle_t=pnp_net_cfg.PM_DISENTANGLE_T,
-                disentangle_z=pnp_net_cfg.PM_DISENTANGLE_Z,
-                t_loss_use_points=pnp_net_cfg.PM_T_USE_POINTS,
-                r_only=pnp_net_cfg.PM_R_ONLY,
+                loss_weight=self.pm_lw, 
+                norm_by_extent=self.pm_norm_by_extent,  
+                symmetric=self.pm_loss_sym,  
+                disentangle_t=self.pm_disentangle_t,  
+                disentangle_z=self.pm_disentangle_z,  
+                t_loss_use_points=self.pm_t_use_points, 
+                r_only=self.pm_r_only,  
             )
             loss_pm_dict = loss_func(
                 pred_rots=out_rot,
@@ -510,120 +588,120 @@ class GDRN(nn.Module):
             loss_dict.update(loss_pm_dict)
 
         # rot_loss ----------
-        if pnp_net_cfg.ROT_LW > 0:
-            if pnp_net_cfg.ROT_LOSS_TYPE == "angular":
+        if self.rot_lw > 0:   
+            if self.rot_loss_type == "angular": 
                 loss_dict["loss_rot"] = angular_distance(out_rot, gt_rot)
-            elif pnp_net_cfg.ROT_LOSS_TYPE == "L2":
+            elif self.rot_loss_type == "L2":
                 loss_dict["loss_rot"] = rot_l2_loss(out_rot, gt_rot)
             else:
                 raise ValueError(
-                    f"Unknown rot loss type: {pnp_net_cfg.ROT_LOSS_TYPE}")
-            loss_dict["loss_rot"] *= pnp_net_cfg.ROT_LW
+                    f"Unknown rot loss type: {self.rot_loss_type}")
+            loss_dict["loss_rot"] *= self.rot_lw
 
         # centroid loss -------------
-        if pnp_net_cfg.CENTROID_LW > 0:
+        if self.centroid_lw > 0:   
             assert (
-                pnp_net_cfg.TRANS_TYPE == "centroid_z"
+                self.trans_type == "centroid_z"
             ), "centroid loss is only valid for predicting centroid2d_rel_delta"
 
-            if pnp_net_cfg.CENTROID_LOSS_TYPE == "L1":
+            if self.centroid_loss_type == "L1":   
                 loss_dict["loss_centroid"] = nn.L1Loss(reduction="mean")(
                     out_centroid, gt_trans_ratio[:, :2])
-            elif pnp_net_cfg.CENTROID_LOSS_TYPE == "L2":
+            elif self.centroid_loss_type == "L2":
                 loss_dict["loss_centroid"] = L2Loss(reduction="mean")(
                     out_centroid, gt_trans_ratio[:, :2])
-            elif pnp_net_cfg.CENTROID_LOSS_TYPE == "MSE":
+            elif self.centroid_loss_type == "MSE":
                 loss_dict["loss_centroid"] = nn.MSELoss(
                     reduction="mean")(out_centroid, gt_trans_ratio[:, :2])
             else:
                 raise ValueError(
-                    f"Unknown centroid loss type: {pnp_net_cfg.CENTROID_LOSS_TYPE}")
-            loss_dict["loss_centroid"] *= pnp_net_cfg.CENTROID_LW
+                    f"Unknown centroid loss type: {self.centroid_loss_type}")
+            loss_dict["loss_centroid"] *= self.centroid_lw 
 
         # z loss ------------------
-        if pnp_net_cfg.Z_LW > 0:
-            if pnp_net_cfg.Z_TYPE == "REL":
+        if  self.z_lw > 0:  
+            if self.z_type == "REL":
                 gt_z = gt_trans_ratio[:, 2]
-            elif pnp_net_cfg.Z_TYPE == "ABS":
+            elif self.z_type == "ABS":
                 gt_z = gt_trans[:, 2]
             else:
                 raise NotImplementedError
 
-            if pnp_net_cfg.Z_LOSS_TYPE == "L1":
+            if self.z_loss_type == "L1":   
                 loss_dict["loss_z"] = nn.L1Loss(
                     reduction="mean")(out_trans_z, gt_z)
-            elif pnp_net_cfg.Z_LOSS_TYPE == "L2":
+            elif self.z_loss_type == "L2":
                 loss_dict["loss_z"] = L2Loss(
                     reduction="mean")(out_trans_z, gt_z)
-            elif pnp_net_cfg.Z_LOSS_TYPE == "MSE":
+            elif self.z_loss_type == "MSE":
                 loss_dict["loss_z"] = nn.MSELoss(
                     reduction="mean")(out_trans_z, gt_z)
             else:
                 raise ValueError(
-                    f"Unknown z loss type: {pnp_net_cfg.Z_LOSS_TYPE}")
-            loss_dict["loss_z"] *= pnp_net_cfg.Z_LW
+                    f"Unknown z loss type: {self.z_loss_type}")
+            loss_dict["loss_z"] *= self.z_lw
 
         # trans loss ------------------
-        if pnp_net_cfg.TRANS_LW > 0:
-            if pnp_net_cfg.TRANS_LOSS_DISENTANGLE:
+        if self.trans_lw > 0:  
+            if self.trans_loss_disentangle:   
                 # NOTE: disentangle xy/z
-                if pnp_net_cfg.TRANS_LOSS_TYPE == "L1":
+                if self.trans_loss_type == "L1":  
                     loss_dict["loss_trans_xy"] = nn.L1Loss(
                         reduction="mean")(out_trans[:, :2], gt_trans[:, :2])
                     loss_dict["loss_trans_z"] = nn.L1Loss(
                         reduction="mean")(out_trans[:, 2], gt_trans[:, 2])
-                elif pnp_net_cfg.TRANS_LOSS_TYPE == "L2":
+                elif self.trans_loss_type == "L2":
                     loss_dict["loss_trans_xy"] = L2Loss(reduction="mean")(
                         out_trans[:, :2], gt_trans[:, :2])
                     loss_dict["loss_trans_z"] = L2Loss(reduction="mean")(
                         out_trans[:, 2], gt_trans[:, 2])
-                elif pnp_net_cfg.TRANS_LOSS_TYPE == "MSE":
+                elif self.trans_loss_type == "MSE":
                     loss_dict["loss_trans_xy"] = nn.MSELoss(
                         reduction="mean")(out_trans[:, :2], gt_trans[:, :2])
                     loss_dict["loss_trans_z"] = nn.MSELoss(
                         reduction="mean")(out_trans[:, 2], gt_trans[:, 2])
                 else:
                     raise ValueError(
-                        f"Unknown trans loss type: {pnp_net_cfg.TRANS_LOSS_TYPE}")
-                loss_dict["loss_trans_xy"] *= pnp_net_cfg.TRANS_LW
-                loss_dict["loss_trans_z"] *= pnp_net_cfg.TRANS_LW
+                        f"Unknown trans loss type: {self.trans_loss_type}")
+                loss_dict["loss_trans_xy"] *= self.trans_lw
+                loss_dict["loss_trans_z"] *= self.trans_lw
             else:
-                if pnp_net_cfg.TRANS_LOSS_TYPE == "L1":
+                if self.trans_loss_type == "L1":
                     loss_dict["loss_trans_LPnP"] = nn.L1Loss(
                         reduction="mean")(out_trans, gt_trans)
-                elif pnp_net_cfg.TRANS_LOSS_TYPE == "L2":
+                elif self.trans_loss_type == "L2":
                     loss_dict["loss_trans_LPnP"] = L2Loss(
                         reduction="mean")(out_trans, gt_trans)
 
-                elif pnp_net_cfg.TRANS_LOSS_TYPE == "MSE":
+                elif self.trans_loss_type == "MSE":
                     loss_dict["loss_trans_LPnP"] = nn.MSELoss(
                         reduction="mean")(out_trans, gt_trans)
                 else:
                     raise ValueError(
-                        f"Unknown trans loss type: {pnp_net_cfg.TRANS_LOSS_TYPE}")
-                loss_dict["loss_trans_LPnP"] *= pnp_net_cfg.TRANS_LW
+                        f"Unknown trans loss type: {self.trans_loss_type}")
+                loss_dict["loss_trans_LPnP"] *= self.trans_lw
 
         # bind loss (R^T@t)
-        if pnp_net_cfg.get("BIND_LW", 0.0) > 0.0:
+        if self.bind_lw > 0.0:  
             pred_bind = torch.bmm(out_rot.permute(
                 0, 2, 1), out_trans.view(-1, 3, 1)).view(-1, 3)
             gt_bind = torch.bmm(gt_rot.permute(0, 2, 1),
                                 gt_trans.view(-1, 3, 1)).view(-1, 3)
-            if pnp_net_cfg.BIND_LOSS_TYPE == "L1":
+            if self.bind_loss_type == "L1":   
                 loss_dict["loss_bind"] = nn.L1Loss(
                     reduction="mean")(pred_bind, gt_bind)
-            elif pnp_net_cfg.BIND_LOSS_TYPE == "L2":
+            elif self.bind_loss_type == "L2":
                 loss_dict["loss_bind"] = L2Loss(
                     reduction="mean")(pred_bind, gt_bind)
-            elif pnp_net_cfg.CENTROID_LOSS_TYPE == "MSE":
+            elif self.bind_loss_type == "MSE":
                 loss_dict["loss_bind"] = nn.MSELoss(
                     reduction="mean")(pred_bind, gt_bind)
             else:
                 raise ValueError(
-                    f"Unknown bind loss (R^T@t) type: {pnp_net_cfg.BIND_LOSS_TYPE}")
-            loss_dict["loss_bind"] *= pnp_net_cfg.BIND_LW
+                    f"Unknown bind loss (R^T@t) type: {self.bind_loss_type}")
+            loss_dict["loss_bind"] *= self.bind_lw 
 
-        if cfg.MODEL.CDPN.USE_MTL:
+        if self.use_mtl: 
             for _k in loss_dict:
                 _name = _k.replace("loss_", "log_var_")
                 cur_log_var = getattr(self, _name)
@@ -631,33 +709,6 @@ class GDRN(nn.Module):
                     torch.exp(-cur_log_var) + \
                     torch.log(1 + torch.exp(cur_log_var))
         return loss_dict
-
-
-def get_xyz_mask_region_out_dim(cfg):
-    r_head_cfg = cfg.MODEL.CDPN.ROT_HEAD
-    t_head_cfg = cfg.MODEL.CDPN.TRANS_HEAD
-    xyz_loss_type = r_head_cfg.XYZ_LOSS_TYPE
-    mask_loss_type = r_head_cfg.MASK_LOSS_TYPE
-    if xyz_loss_type in ["MSE", "L1", "L2", "SmoothL1"]:
-        r_out_dim = 3
-    elif xyz_loss_type in ["CE_coor", "CE"]:
-        r_out_dim = 3 * (r_head_cfg.XYZ_BIN + 1)
-    else:
-        raise NotImplementedError(f"unknown xyz loss type: {xyz_loss_type}")
-
-    if mask_loss_type in ["L1", "BCE"]:
-        mask_out_dim = 1
-    elif mask_loss_type in ["CE"]:
-        mask_out_dim = 2
-    else:
-        raise NotImplementedError(f"unknown mask loss type: {mask_loss_type}")
-
-    region_out_dim = r_head_cfg.NUM_REGIONS + 1
-    # at least 2 regions (with bg, at least 3 regions)
-    assert region_out_dim > 2, region_out_dim
-
-    return r_out_dim, mask_out_dim, region_out_dim
-
 
 def build_model_optimizer(cfg):
     backbone_cfg = cfg.MODEL.CDPN.BACKBONE
