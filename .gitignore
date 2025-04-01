@@ -31,7 +31,6 @@ dist/
 *.npy
 
 # ipython/jupyter notebooks
-*.ipynb
 **/.ipynb_checkpoints/
 
 # Editor temporaries
@@ -56,5 +55,5 @@ pvnet-rendering
 
 results*
 
-*.trt
-*.onnx
+engine.trt
+model.onnx
