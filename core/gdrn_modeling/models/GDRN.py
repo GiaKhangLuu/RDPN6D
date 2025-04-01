@@ -453,6 +453,171 @@ class GDRN(nn.Module):
 
             return out_dict, loss_dict
         return out_dict
+    
+    def inference(self, batched_inputs):
+        batched_inputs = batched_inputs[0]
+        x = batched_inputs["roi_img"]
+        roi_classes = batched_inputs["roi_cls"]
+        roi_cams = batched_inputs["roi_cam"]
+        roi_centers = batched_inputs["roi_center"]
+        resize_ratios = batched_inputs["resize_ratio"]
+        roi_coord_2d = batched_inputs["roi_coord_2d"]
+        roi_whs = batched_inputs["roi_wh"]
+        roi_extents = batched_inputs["roi_extent"]
+        fps = batched_inputs["fps"]
+
+        # x.shape [bs, 3, 256, 256]
+        if self.concat:
+            features, x_f64, x_f32, x_f16 = self.backbone(
+                x)  # features.shape [bs, 2048, 8, 8]
+            # joints.shape [bs, 1152, 64, 64]
+
+            mask, coor_x, coor_y, coor_z, region = self.rot_head_net(
+                features, x_f64, x_f32, x_f16)
+        else:
+            features = self.backbone(x)  # features.shape [bs, 2048, 8, 8]
+
+            # joints.shape [bs, 1152, 64, 64]
+            mask, coor_x, coor_y, coor_z, region = self.rot_head_net(features)
+
+        # TODO: remove this trans_head_net
+        # trans = self.trans_head_net(features)
+
+        consistent_map = None
+
+        device = x.device
+        bs = x.shape[0]
+        num_classes = self.rot_head_net.num_classes
+
+        out_res = self.backbone_out_res
+
+        if self.rot_head_net.rot_class_aware: 
+            assert roi_classes is not None
+            coor_x = coor_x.view(
+                bs, num_classes, self.r_out_dim // 3, out_res, out_res)
+            coor_x = coor_x[torch.arange(bs).to(device), roi_classes]
+            coor_y = coor_y.view(
+                bs, num_classes, self.r_out_dim // 3, out_res, out_res)
+            coor_y = coor_y[torch.arange(bs).to(device), roi_classes]
+            coor_z = coor_z.view(
+                bs, num_classes, self.r_out_dim // 3, out_res, out_res)
+            coor_z = coor_z[torch.arange(bs).to(device), roi_classes]
+
+        if self.rot_head_net.mask_class_aware:  
+            assert roi_classes is not None
+            mask = mask.view(
+                bs, num_classes, self.mask_out_dim, out_res, out_res)
+            mask = mask[torch.arange(bs).to(device), roi_classes]
+
+        if self.rot_head_net.region_class_aware:  
+            assert roi_classes is not None
+            region = region.view(
+                bs, num_classes, self.region_out_dim, out_res, out_res)
+            region = region[torch.arange(bs).to(device), roi_classes]
+
+        # -----------------------------------------------
+        # get rot and trans from pnp_net
+        # NOTE: use softmax for bins (the last dim is bg)
+        if coor_x.shape[1] > 1 and coor_y.shape[1] > 1 and coor_z.shape[1] > 1:
+            coor_x_softmax = F.softmax(coor_x[:, :-1, :, :], dim=1)
+            coor_y_softmax = F.softmax(coor_y[:, :-1, :, :], dim=1)
+            coor_z_softmax = F.softmax(coor_z[:, :-1, :, :], dim=1)
+            coor_feat = torch.cat(
+                [coor_x_softmax, coor_y_softmax, coor_z_softmax], dim=1)
+        else:
+            coor_feat = torch.cat([coor_x, coor_y, coor_z], dim=1)  # BCHW
+
+        if self.with_2d_coord:  
+            assert roi_coord_2d is not None
+            coor_feat = torch.cat([coor_feat, roi_coord_2d], dim=1)
+
+        # NOTE: for region, the 1st dim is bg
+        region_softmax = F.softmax(region[:, 1:, :, :], dim=1)
+        # * new
+        region_softmax_argmax = torch.argmax(region_softmax.reshape(
+            region_softmax.shape[0], region_softmax.shape[1], -1), dim=1).unsqueeze(2)
+        #region_softmax_argmax = torch.topk(region_softmax, k=64, dim=3)[1][:,:,:,0]
+        #region_softmax_argmax = torch.ones_like(region_softmax_argmax)
+        region_fps = torch.gather(fps.unsqueeze(
+            1).expand(-1, region_softmax_argmax.shape[1], -1, -1), 2, region_softmax_argmax.unsqueeze(3).expand(-1, -1, -1, 3))
+        region_fps = region_fps.squeeze(2).reshape(
+            region_fps.shape[0], 64, 64, 3)
+        region_fps = region_fps.permute(0, 3, 1, 2)
+        #region_fps = torch.zeros_like(region_fps)
+        coor_feat = torch.cat([coor_feat, region_fps], dim=1)
+        # * new end
+        mask_atten = None
+        if self.pnp_net.mask_attention_type != "none":  
+            mask_atten = get_mask_prob(self.mask_loss_type, mask)
+        check_consistent = False
+        # * new
+        if check_consistent:
+            pred_xyz_coor = torch.cat([coor_x, coor_y, coor_z], dim=1)
+            self.consistent += xyz_to_region(pred_xyz_coor, fps, region, mask)
+            self.item += 1
+
+        # * new end
+        region_atten = None
+        if self.region_attention:  
+            region_atten = region_softmax
+
+        pred_rot_, pred_t_ = self.pnp_net(
+            coor_feat, region=region_atten, extents=roi_extents, mask_attention=mask_atten
+        )
+        if self.r_only:  # override trans pred  
+            pred_t_ = self.trans_head_net(features)
+
+        # convert pred_rot to rot mat -------------------------
+        rot_type = self.pnp_net.rot_type
+        if rot_type in ["ego_quat", "allo_quat"]:
+            pred_rot_m = quat2mat_torch(pred_rot_)
+        elif rot_type in ["ego_log_quat", "allo_log_quat"]:
+            pred_rot_m = quat2mat_torch(quaternion_lf.qexp(pred_rot_))
+        elif rot_type in ["ego_lie_vec", "allo_lie_vec"]:
+            pred_rot_m = lie_algebra.lie_vec_to_rot(pred_rot_)
+        elif rot_type in ["ego_rot6d", "allo_rot6d"]:
+            pred_rot_m = ortho6d_to_mat_batch(pred_rot_)
+        else:
+            raise RuntimeError(f"Wrong pred_rot_ dim: {pred_rot_.shape}")
+        # convert pred_rot_m and pred_t to ego pose -----------------------------
+        if self.trans_type == "centroid_z":  
+            pred_ego_rot, pred_trans = pose_from_pred_centroid_z(
+                pred_rot_m,
+                pred_centroids=pred_t_[:, :2],
+                pred_z_vals=pred_t_[:, 2:3],  # must be [B, 1]
+                roi_cams=roi_cams,
+                roi_centers=roi_centers,
+                resize_ratios=resize_ratios,
+                roi_whs=roi_whs,
+                eps=0,
+                is_allo="allo" in rot_type,
+                z_type=self.z_type, 
+                # is_train=True
+                is_train=False,  # TODO: sometimes we need it to be differentiable during test
+            )
+        elif self.trans_type == "centroid_z_abs":
+            # abs 2d obj center and abs z
+            pred_ego_rot, pred_trans = pose_from_pred_centroid_z_abs(
+                pred_rot_m,
+                pred_centroids=pred_t_[:, :2],
+                pred_z_vals=pred_t_[:, 2:3],  # must be [B, 1]
+                roi_cams=roi_cams,
+                eps=0,
+                is_allo="allo" in rot_type,
+                # is_train=True
+                is_train=False,  # TODO: sometimes we need it to be differentiable during test
+            )
+        elif self.trans_type == "trans":
+            # TODO: maybe denormalize trans
+            pred_ego_rot, pred_trans = pose_from_pred(
+                pred_rot_m, pred_t_, eps=1e-4, is_allo="allo" in rot_type, is_train=do_loss
+            )
+        else:
+            raise ValueError(
+                f"Unknown pnp_net trans type: {self.trans_type}")
+
+        out_dict = {"rot": pred_ego_rot, "trans": pred_trans}
+        return out_dict
 
     def gdrn_loss(
         self,

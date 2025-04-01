@@ -49,7 +49,7 @@ class md_pointnet(nn.Module):
         l3 = self.b3(self.conv3(l2)) # [3, 512, 32, 32]
 
         gl_ft = F.adaptive_max_pool2d(l3, (1, 1)) # [3, 512, 1, 1]
-        gl_ft = F.adaptive_avg_pool2d(gl_ft, (h, w))  # [3, 512, 32, 32]
+        gl_ft = F.interpolate(gl_ft, size=(h, w), mode="bilinear", align_corners=False)  # [3, 512, 32, 32]
 
         return torch.cat([l3, gl_ft], dim=1)
 

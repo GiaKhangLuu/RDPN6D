@@ -125,20 +125,22 @@ def pose_from_predictions_test(
             # except:
 
     # rot mat
-    if pred_rots.shape[-1] == 3 and pred_rots.ndim == 3:
-        pred_rots = pred_rots.detach().cpu().numpy()
-        ego_rot_preds = np.zeros_like(pred_rots)
-        for i in range(pred_rots.shape[0]):
-            if is_allo:
-                cur_ego_mat = allocentric_to_egocentric(
-                    np.hstack([pred_rots[i], translation[i].detach().cpu().numpy().reshape(3, 1)]),
-                    src_type="mat",
-                    dst_type="mat",
-                )[:3, :3]
-            else:
-                cur_ego_mat = pred_rots[i]
-            ego_rot_preds[i] = cur_ego_mat
-    return torch.from_numpy(ego_rot_preds), translation
+    #if pred_rots.shape[-1] == 3 and pred_rots.ndim == 3:
+        #pred_rots = pred_rots.detach().cpu().numpy()
+        #ego_rot_preds = np.zeros_like(pred_rots)
+        #for i in range(pred_rots.shape[0]):
+            #if is_allo:
+                #cur_ego_mat = allocentric_to_egocentric(
+                    #np.hstack([pred_rots[i], translation[i].detach().cpu().numpy().reshape(3, 1)]),
+                    #src_type="mat",
+                    #dst_type="mat",
+                #)[:3, :3]
+            #else:
+                #cur_ego_mat = pred_rots[i]
+            #ego_rot_preds[i] = cur_ego_mat
+    #return torch.from_numpy(ego_rot_preds), translation
+    ego_rot_preds = allo_to_ego_mat_torch(translation, pred_rots, eps=eps)
+    return ego_rot_preds, translation
 
 
 def pose_from_predictions_train(
