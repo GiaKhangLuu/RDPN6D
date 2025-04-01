@@ -54,5 +54,7 @@ dist/
 bop_renderer
 pvnet-rendering
 
-results
-results_correct
+results*
+
+*.trt
+*.onnx
