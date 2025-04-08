@@ -253,7 +253,6 @@ if __name__ == "__main__":
                 pred_ts_in_frame.append(pred_t)
 
         for pred_R, pred_t in zip(pred_Rs_in_frame, pred_ts_in_frame):
-            print(K)
             kpts_2d = misc.project_pts(kpts_3d, K, pred_R, pred_t)
             sixd_drawd_img = misc.draw_projected_box3d(sixd_drawd_img, kpts_2d)
 

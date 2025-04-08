@@ -615,7 +615,7 @@ def depth_im_to_dist_im(depth_im, K):
 
 def norm_depth(depth, valid_start=0.2, valid_end=1.0):
     mask = depth > 0
-    depth_n = depth.astype(np.float)
+    depth_n = depth.astype(np.float64)
     depth_n[mask] -= depth_n[mask].min()
     depth_n[mask] /= depth_n[mask].max() / (valid_end - valid_start)
     depth_n[mask] += valid_start
@@ -1298,8 +1298,8 @@ def ply_vtx_color_expand(model):
 
         ptsExpand.append(1 / 3.0 * (pts[int(face[0])] + pts[int(face[1])] + pts[int(face[2])]))
         colorsExpand.append(1 / 3.0 * (colors[int(face[0])] + colors[int(face[1])] + colors[int(face[2])]))
-    ptsExpand = np.array(ptsExpand, dtype=np.float)
-    colorsExpand = np.array(colorsExpand, dtype=np.float)
+    ptsExpand = np.array(ptsExpand, dtype=np.float64)
+    colorsExpand = np.array(colorsExpand, dtype=np.float64)
     pts_expand = np.concatenate((pts, ptsExpand), axis=0)
     colors_expand = np.concatenate((colors, colorsExpand), axis=0)
     model["pts_expand"] = pts_expand
