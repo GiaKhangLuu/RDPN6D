@@ -22,10 +22,7 @@ import numpy as np
 import tensorrt as trt
 from cuda import cudart
 
-TENSORRT_DIR = os.environ["TENSORRT_DIR"]
-sys.path.append(TENSORRT_DIR + "/samples/python")
-
-import common
+import TensorRT.common as common
 
 class TensorRTInfer:
     """
