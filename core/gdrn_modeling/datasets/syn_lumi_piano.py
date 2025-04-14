@@ -269,7 +269,7 @@ OBJECTS = [
 ]
 
 TRACK_START = 2
-TRACK_END = 3
+TRACK_END = 6
 
 DATASET = dict(
     syn_lumi_piano_train=dict(

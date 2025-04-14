@@ -1,13 +1,13 @@
 from omegaconf import OmegaConf
 from detectron2.config import LazyCall as L
 from detectron2.data import get_detection_dataset_dicts
+from detectron2.solver.build import get_default_optimizer_params
 
 from core.gdrn_modeling.models.GDRN import GDRN
 from core.gdrn_modeling.models.resnet_backbone import ResNetBackboneNet, resnet_spec
 from core.gdrn_modeling.models.cdpn_rot_head_region import RotWithRegionHead
 from core.gdrn_modeling.models.conv_pnp_net import ConvPnPNet
 from core.gdrn_modeling.models.resnet_backbone import ResNetBackboneNet, resnet_spec
-
 from core.gdrn_modeling.data_loader import (
     build_gdrn_train_loader, 
     build_gdrn_test_loader, 
@@ -15,7 +15,8 @@ from core.gdrn_modeling.data_loader import (
     build_gdrn_augmentation
 )
 from core.gdrn_modeling.gdrn_custom_evaluator import GDRN_EvaluatorCustom
-
+from lib.torch_utils.solver.lr_scheduler import flat_and_anneal_lr_scheduler
+from lib.torch_utils.solver.ranger import Ranger
 import ref
 
 DATASETS=dict(
@@ -37,6 +38,26 @@ mask_loss_type="L1"
 xyz_loss_mask_gt="visib"
 xyz_bin=64
 pnp_rot_type="allo_rot6d"
+
+# Common training-related configs that are designed for "tools/lazyconfig_train_net.py"
+# You can use your own instead, together with your own train_net.py
+train=dict(
+    output_dir="output/gdrn/lumi_piano/2025_04_14_01",
+    checkpointer=dict(
+        period=5000,
+        max_to_keep=100,
+    ),  
+    ddp=dict(  # options for DistributedDataParallel
+        broadcast_buffers=False,
+        find_unused_parameters=False,
+        fp16_compression=False,
+    ),
+    amp=dict(enabled=False),  # options for Automatic Mixed Precision
+    log_period=20,
+    eval_period=5000,
+    total_epochs=50,
+    ims_per_batch=24
+)
 
 dataset_common_cfg=dict(
     color_aug_prob=0.0,
@@ -83,10 +104,28 @@ dataset_common_cfg=dict(
 
 dataloader = OmegaConf.create()
 
-dataloader.train=L(build_gdrn_train_loader)(
-    dataset=L(GDRN_DatasetFromList)(
+train_dataset=L(GDRN_DatasetFromList)(
+    dataset_dicts=L(get_detection_dataset_dicts)(
+        names=DATASETS.get("TRAIN"),
+        filter_empty=True,
+        min_keypoints=0,
+        proposal_files=None
+    ),
+    augmentation=build_gdrn_augmentation(
+        min_size=(480,),
+        max_size=640,
+        sample_style="choice",
+        is_train=True
+    ),
+    split='train',
+    copy=False,
+    **dataset_common_cfg
+)
+
+if len(DATASETS.get("TRAIN2", ())) > 0 and DATASETS.get("TRAIN2_RATIO", 0.0) > 0.0:
+    syn_train_dataset=L(GDRN_DatasetFromList)(
         dataset_dicts=L(get_detection_dataset_dicts)(
-            names=DATASETS.get("TRAIN"),
+            names=DATASETS.get("TRAIN2"),
             filter_empty=True,
             min_keypoints=0,
             proposal_files=None
@@ -100,12 +139,16 @@ dataloader.train=L(build_gdrn_train_loader)(
         split='train',
         copy=False,
         **dataset_common_cfg
-    ),
+    )
+else:
+    syn_train_dataset = {}
+
+dataloader.train=L(build_gdrn_train_loader)(
     sampler_name="TrainingSampler",
     repeat_threshold=0.0,
-    img_per_batch=24,
+    img_per_batch=train.get("ims_per_batch"),
     aspect_ratio_grouping=False, 
-    num_workers=4
+    num_workers=0
 )
 
 dataloader.test=L(build_gdrn_test_loader)(
@@ -128,32 +171,6 @@ dataloader.test=L(build_gdrn_test_loader)(
     num_workers=4,
 )
 
-if len(DATASETS.get("TRAIN2", ())) > 0 and DATASETS.get("TRAIN2_RATIO", 0.0) > 0.0:
-    dataloader.train2=L(build_gdrn_train_loader)(
-        dataset=L(GDRN_DatasetFromList)(
-            dataset_dicts=L(get_detection_dataset_dicts)(
-                names=DATASETS.get("TRAIN2"),
-                filter_empty=True,
-                min_keypoints=0,
-                proposal_files=None
-            ),
-            augmentation=build_gdrn_augmentation(
-                min_size=(480,),
-                max_size=640,
-                sample_style="choice",
-                is_train=True
-            ),
-            split='train',
-            copy=False,
-            **dataset_common_cfg
-        ),
-        sampler_name="TrainingSampler",
-        repeat_threshold=0.0,
-        img_per_batch=24,
-        aspect_ratio_grouping=False, 
-        num_workers=4
-    )
-
 dataloader.evaluator=L(GDRN_EvaluatorCustom)(
     dataset_name=DATASETS.get("TEST")[0],
     distributed=False,
@@ -173,6 +190,28 @@ dataloader.evaluator=L(GDRN_EvaluatorCustom)(
     sym_objs=[]
 ) 
 
+optimizer=L(Ranger)(
+    params=L(get_default_optimizer_params)(
+        base_lr=5e-5,
+        weight_decay=0.0,
+        bias_lr_factor=1.0,
+    ),
+    lr=1e-4, 
+    weight_decay=0
+)
+
+lr_multiplier=L(flat_and_anneal_lr_scheduler)(
+    #total_iters=total_iters,  # NOTE: TOTAL_EPOCHS * len(train_loader)
+    warmup_factor=0.001,
+    warmup_iters=1000,
+    warmup_method="linear",  # default "linear"  
+    anneal_method="cosine",  # "cosine"
+    anneal_point=0.72,  # default 0.72    
+    steps=(0.5, 0.75),
+    target_lr_factor=0,
+    poly_power=0.9,  # poly power
+    step_gamma=0.1,
+)
 
 model=L(GDRN)(
     backbone=L(ResNetBackboneNet)(

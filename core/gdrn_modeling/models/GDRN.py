@@ -53,54 +53,54 @@ def xyz_to_region(xyz_crop, fps_points, pred_region, mask):
 
 class GDRN(nn.Module):
     def __init__(
-            self, 
-            backbone, 
-            rot_head_net, 
-            trans_head_net=None, 
-            pnp_net=None,
-            concat=False,
-            xyz_loss_type="L1",  # L1 | CE_coor
-            mask_loss_type="L1",  # L1 | BCE | CE
-            backbone_out_res=64,
-            use_pnp_in_test=False,
-            xyz_bin=64,
-            num_regions=32,
-            xyz_loss_mask_gt="visib",  # trunc | visib | obj,
-            xyz_lw=1.0,
-            mask_loss_gt="trunc",  # trunc | visib | gt
-            mask_lw=1.0,
-            region_loss_type="CE",  # CE
-            region_loss_mask_gt="visib",  # trunc | visib | obj
-            region_lw=1.0,
-            with_2d_coord=True,
-            region_attention=True,
-            r_only=False,
-            trans_type="centroid_z",  
-            z_type="ABS",  
-            pm_lw=1.0,
-            pm_loss_type="L1",  # L1 | Smooth_L1
-            pm_smooth_l1_beta=1.0,
-            pm_norm_by_extent=True,
-            pm_loss_sym=False,  # use symmetric PM loss
-            pm_disentangle_t=False,  # disentangle R/T
-            pm_disentangle_z=False,  # disentangle R/xy/z
-            pm_t_use_points=False,
-            pm_r_only=False,
-            rot_lw=1.0,
-            rot_loss_type="angular",  # angular | L2
-            centroid_lw=1.0,
-            centroid_loss_type="L1",
-            z_lw=1.0,
-            z_loss_type="L1",
-            trans_lw=1.0,
-            trans_loss_disentangle=True,
-            trans_loss_type="L1",
-            bind_lw=1.0,
-            bind_loss_type="L1",
-            use_mtl=False,
-            device="cuda",
-            weights=None,
-        ):
+        self, 
+        backbone, 
+        rot_head_net, 
+        trans_head_net=None, 
+        pnp_net=None,
+        concat=False,
+        xyz_loss_type="L1",  # L1 | CE_coor
+        mask_loss_type="L1",  # L1 | BCE | CE
+        backbone_out_res=64,
+        use_pnp_in_test=False,
+        xyz_bin=64,
+        num_regions=32,
+        xyz_loss_mask_gt="visib",  # trunc | visib | obj,
+        xyz_lw=1.0,
+        mask_loss_gt="trunc",  # trunc | visib | gt
+        mask_lw=1.0,
+        region_loss_type="CE",  # CE
+        region_loss_mask_gt="visib",  # trunc | visib | obj
+        region_lw=1.0,
+        with_2d_coord=True,
+        region_attention=True,
+        r_only=False,
+        trans_type="centroid_z",  
+        z_type="ABS",  
+        pm_lw=1.0,
+        pm_loss_type="L1",  # L1 | Smooth_L1
+        pm_smooth_l1_beta=1.0,
+        pm_norm_by_extent=True,
+        pm_loss_sym=False,  # use symmetric PM loss
+        pm_disentangle_t=False,  # disentangle R/T
+        pm_disentangle_z=False,  # disentangle R/xy/z
+        pm_t_use_points=False,
+        pm_r_only=False,
+        rot_lw=1.0,
+        rot_loss_type="angular",  # angular | L2
+        centroid_lw=1.0,
+        centroid_loss_type="L1",
+        z_lw=1.0,
+        z_loss_type="L1",
+        trans_lw=1.0,
+        trans_loss_disentangle=True,
+        trans_loss_type="L1",
+        bind_lw=1.0,
+        bind_loss_type="L1",
+        use_mtl=False,
+        device="cuda",
+        weights=None,
+    ):
         super().__init__()
         self.backbone = backbone
 

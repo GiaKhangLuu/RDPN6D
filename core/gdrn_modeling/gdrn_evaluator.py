@@ -526,7 +526,7 @@ def test_coordinate_regression(cfg, model, data_loader, evaluator, amp_test=Fals
             # process input
             if not isinstance(inputs, list):  # bs=1
                 inputs = [inputs]
-            batch = batch_data(cfg, inputs, phase="test")
+            batch = batch_data(inputs, phase="test")
             if evaluator.train_objs is not None:
                 roi_labels = batch["roi_cls"].cpu().numpy().tolist()
                 obj_names = [evaluator.obj_names[_l] for _l in roi_labels]
@@ -570,7 +570,7 @@ def test_coordinate_regression(cfg, model, data_loader, evaluator, amp_test=Fals
             
     return 
 
-def gdrn_inference_on_dataset(cfg, model, data_loader, evaluator, amp_test=False):
+def gdrn_inference_on_dataset(model, data_loader, evaluator, amp_test=False):
     """Run model on the data_loader and evaluate the metrics with evaluator.
     Also benchmark the inference speed of `model.forward` accurately. The model
     will be used in eval mode.
@@ -615,7 +615,7 @@ def gdrn_inference_on_dataset(cfg, model, data_loader, evaluator, amp_test=False
             # process input
             if not isinstance(inputs, list):  # bs=1
                 inputs = [inputs]
-            batch = batch_data(cfg, inputs, phase="test")
+            batch = batch_data(inputs, phase="test")
             if evaluator.train_objs is not None:
                 roi_labels = batch["roi_cls"].cpu().numpy().tolist()
                 obj_names = [evaluator.obj_names[_l] for _l in roi_labels]
