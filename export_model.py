@@ -32,9 +32,7 @@ from core.gdrn_modeling.engine_utils import batch_data
 def setup_cfg(config_path):
     cfg = LazyConfig.load(config_path)
     # cuda context is initialized before creating dataloader, so we don't fork anymore
-    cfg.dataloader.train.num_workers = 0
     cfg.dataloader.test.num_workers = 0
-    cfg.dataloader.train2.num_workers = 0
     return cfg
 
 # experimental. API not yet final

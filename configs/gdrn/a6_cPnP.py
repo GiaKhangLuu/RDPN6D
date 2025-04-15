@@ -255,7 +255,7 @@ model=L(GDRN)(
     ),
     use_mtl=False,
     device="cuda",
-    weights="./output/gdrn/lumi_piano/2025_03_11_01/model_0145349.pth",
+    weights="./output/gdrn/lumi_piano/2025_04_14_01/model_best.pth",
     concat=False,
     xyz_loss_type=xyz_loss_type,
     mask_loss_type=mask_loss_type,
