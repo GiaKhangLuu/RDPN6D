@@ -57,3 +57,5 @@ results*
 
 engine.trt
 model.onnx
+
+yolov11

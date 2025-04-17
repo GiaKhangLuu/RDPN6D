@@ -5,6 +5,7 @@ import queue
 import argparse
 from pathlib import Path
 import time
+import os
 
 from camera_tools import *
 from lib.pysixd import inout, misc
@@ -17,10 +18,12 @@ from trt_infer import TensorRTInfer
 frame_getter_queue = queue.Queue()  
 oak_mxid = "18443010613E940F00"
 
+HOME_DIR = os.environ["HOME"]
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--yolo11_ckpt', type=str, default="/home/giakhang/dev/yolov11/runs/segment/piano_2025-03-05_01:22:29/weights/best.engine")
+    parser.add_argument('--yolo11_ckpt', type=str, default=HOME_DIR + "/tracking_piano_config/yolo_best.engine")
     parser.add_argument('--save_every_k_frame', type=int, default=-1)
 
     args = parser.parse_args()
@@ -31,13 +34,13 @@ if __name__ == "__main__":
         [0.0, 0.0, 1.0]
     ])
 
-    segmentator = YOLO(args.yolo11_ckpt, task="segment")
+    segmentator = YOLO(args.yolo11_ckpt, task="detect")
     classes = ['human_hand', 'lumi_piano']
     max_pianos_det = 2
     piano_conf = 0.5
 
-    cad_path = "./datasets/lumi_piano_dataset/models/obj_000001.ply"
-    engine_path = "./engine.trt"
+    cad_path = HOME_DIR + "/tracking_piano_config/obj_000001.ply"
+    engine_path = HOME_DIR + "/tracking_piano_config/rdpn6d_best.trt"
     trt_infer = TensorRTInfer(engine_path)
     num_fps_points = 32
     objects = [
@@ -60,7 +63,7 @@ if __name__ == "__main__":
     lumi_piano_model["bbox3d_and_center"] = misc.get_bbox3d_and_center(lumi_piano_model["pts"])
     kpts_3d = lumi_piano_model["bbox3d_and_center"]
 
-    fps_points_path = "./datasets/lumi_piano_dataset/models/fps_points.pkl"
+    fps_points_path = HOME_DIR + "/tracking_piano_config/fps_points.pkl"
     fps_points = get_fps_points(num_fps_points, fps_points_path, objects, obj2id)[cls_id]
 
     pipeline_oak = initialize_oak_cam()
@@ -103,18 +106,18 @@ if __name__ == "__main__":
         ism_det = segmentator(rgb)
         ism_det = ism_det[0]
 
-        if ism_det.masks is not None:
-            ism_masks = []
-            orig_shape = ism_det.orig_shape
-            for i in range(len(ism_det.masks.data)):
-                mask = np.zeros((orig_shape[0], orig_shape[1]), dtype=np.uint8)
-                xy_polygon = ism_det.masks.xy[i]
-                polygon = xy_polygon.astype(np.int32).reshape(-1, 1, 2)
-                mask = cv2.fillPoly(mask, [polygon], 1)  
+        if ism_det.boxes is not None:
+            #ism_masks = []
+            #orig_shape = ism_det.orig_shape
+            #for i in range(len(ism_det.masks.data)):
+            #    mask = np.zeros((orig_shape[0], orig_shape[1]), dtype=np.uint8)
+            #    xy_polygon = ism_det.masks.xy[i]
+            #    polygon = xy_polygon.astype(np.int32).reshape(-1, 1, 2)
+            #    mask = cv2.fillPoly(mask, [polygon], 1)  
 
-                ism_masks.append(mask)
+            #    ism_masks.append(mask)
 
-            ism_masks = np.array(ism_masks, dtype=np.uint8)
+            #ism_masks = np.array(ism_masks, dtype=np.uint8)
             ism_cls = ism_det.boxes.cls.cpu().numpy()
             ism_bboxes = ism_det.boxes.xyxy.cpu().numpy()
             ism_confs = ism_det.boxes.conf.cpu().numpy()
@@ -122,42 +125,42 @@ if __name__ == "__main__":
             piano_preds_idx = np.where(ism_cls == classes.index("lumi_piano"))[0]
             human_hand_preds_idx = np.where(ism_cls == classes.index("human_hand"))[0]
 
-            human_hand_preds_mask = ism_masks[human_hand_preds_idx]
+            #human_hand_preds_mask = ism_masks[human_hand_preds_idx]
             human_hand_confs = ism_confs[human_hand_preds_idx]
             human_hand_bboxes = ism_bboxes[human_hand_preds_idx]
             human_hand_classes = ism_cls[human_hand_preds_idx]
 
-            piano_preds_mask = ism_masks[piano_preds_idx]
+            #piano_preds_mask = ism_masks[piano_preds_idx]
             piano_confs = ism_confs[piano_preds_idx]
             piano_bboxes = ism_bboxes[piano_preds_idx]
             piano_classes = ism_cls[piano_preds_idx]
 
             selected_pianos_idx = piano_confs.argsort()[-max_pianos_det:]
             piano_bboxes = piano_bboxes[selected_pianos_idx]
-            piano_preds_mask = piano_preds_mask[selected_pianos_idx]
+            #piano_preds_mask = piano_preds_mask[selected_pianos_idx]
             piano_confs = piano_confs[selected_pianos_idx]
             piano_classes = piano_classes[selected_pianos_idx]
 
             valid_pianos_pred = piano_confs > piano_conf
             piano_bboxes = piano_bboxes[valid_pianos_pred]
-            piano_preds_mask = piano_preds_mask[valid_pianos_pred]
+            #piano_preds_mask = piano_preds_mask[valid_pianos_pred]
             piano_confs = piano_confs[valid_pianos_pred]
             piano_classes = piano_classes[valid_pianos_pred]
 
             ism_result["classes"] = np.concatenate((human_hand_classes, piano_classes))
             ism_result["bboxes_xyxy"] = np.concatenate((human_hand_bboxes, piano_bboxes))
-            ism_result["masks"] = np.concatenate((human_hand_preds_mask, piano_preds_mask)) 
+            #ism_result["masks"] = np.concatenate((human_hand_preds_mask, piano_preds_mask)) 
 
             ism_pred_cls = ism_result["classes"]
             ism_pred_boxes = ism_result["bboxes_xyxy"]
             human_hand_preds_idx = np.where(ism_pred_cls == classes.index("human_hand"))[0]
             lumi_piano_preds_idx = np.where(ism_pred_cls == classes.index("lumi_piano"))[0]
 
-            pred_ins_masks = ism_result["masks"]
-            mask = np.zeros((mask_drawed_img.shape[0], mask_drawed_img.shape[1]), dtype=np.uint8)
-            for pred_idx in range(pred_ins_masks.shape[0]):
-                mask += pred_ins_masks[pred_idx]
-            mask_drawed_img = cv2.bitwise_and(mask_drawed_img, mask_drawed_img, mask=mask)
+            #pred_ins_masks = ism_result["masks"]
+            #mask = np.zeros((mask_drawed_img.shape[0], mask_drawed_img.shape[1]), dtype=np.uint8)
+            #for pred_idx in range(pred_ins_masks.shape[0]):
+            #    mask += pred_ins_masks[pred_idx]
+            #mask_drawed_img = cv2.bitwise_and(mask_drawed_img, mask_drawed_img, mask=mask)
 
             for i, box in enumerate(ism_pred_boxes):
                 color = (0, 0, 255) if i in human_hand_preds_idx else (0, 255, 0)
