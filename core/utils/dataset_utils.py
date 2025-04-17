@@ -51,7 +51,7 @@ def flat_dataset_dicts(dataset_dicts):
     return new_dicts
 
 
-def filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=0.0):
+def filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=0.0, min_px_count_visib=0):
     """
     filter invalid instances in the dataset_dicts (for train)
     Args:
@@ -64,7 +64,7 @@ def filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=0.0):
         if "annotations" in dataset_dict:
             new_annos = []
             for inst_id, anno in enumerate(dataset_dict["annotations"]):
-                if anno.get("visib_fract", 1.0) > visib_thr:
+                if anno.get("visib_fract") > visib_thr and anno.get("px_count_visib") > min_px_count_visib:
                     new_annos.append(anno)
                 else:
                     num_filtered += 1
@@ -74,7 +74,7 @@ def filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=0.0):
 
         new_dicts.append(new_dict)
     if num_filtered > 0:
-        logger.warning(f"filtered out {num_filtered} instances with visib_fract <= {visib_thr}")
+        logger.warning(f"filtered out {num_filtered} instances with visib_fract <= {visib_thr} or px_count_visib <= {min_px_count_visib}")
     return new_dicts
 
 

@@ -42,7 +42,7 @@ pnp_rot_type="allo_rot6d"
 # Common training-related configs that are designed for "tools/lazyconfig_train_net.py"
 # You can use your own instead, together with your own train_net.py
 train=dict(
-    output_dir="output/gdrn/lumi_piano/2025_04_14_01",
+    output_dir="output/gdrn/lumi_piano/2025_04_16_01",
     checkpointer=dict(
         period=5000,
         max_to_keep=100,
@@ -94,6 +94,7 @@ dataset_common_cfg=dict(
     rot_head_xyz_bin=xyz_bin,
     rot_head_xyz_loss_mask_gt=xyz_loss_mask_gt,
     filter_visib_thr=0.1,
+    min_px_count_visib=5000,
     load_dets_test=False,
     det_files_test=(),
     det_topk_per_obj=1,
@@ -174,7 +175,7 @@ dataloader.test=L(build_gdrn_test_loader)(
 dataloader.evaluator=L(GDRN_EvaluatorCustom)(
     dataset_name=DATASETS.get("TEST")[0],
     distributed=False,
-    output_dir="./output/gdrn/lumi_piano/2025_03_11_01",
+    output_dir=train.get("output_dir"),
     train_objs=train_obj_names,
     eval_precision=False,
     eval_cached=False,

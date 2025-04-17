@@ -141,6 +141,8 @@ class SYN_LUMI_Piano_Dataset(object):
                     proj = proj[:2] / proj[2]
 
                     bbox_visib = gt_info_dict[str_im_id][anno_i]["bbox_visib"]
+                    px_count_visib = gt_info_dict[str_im_id][anno_i].get("px_count_visib", float('inf'))
+                    visib_fract = gt_info_dict[str_im_id][anno_i].get("visib_fract", 1.0)
                     bbox_obj = gt_info_dict[str_im_id][anno_i]["bbox_obj"]
                     x1, y1, w, h = bbox_visib
                     if self.filter_invalid:
@@ -170,6 +172,8 @@ class SYN_LUMI_Piano_Dataset(object):
                         "centroid_2d": proj,  # absolute (cx, cy)
                         "segmentation": mask_rle,
                         "mask_full_file": mask_file,  # TODO: load as mask_full, rle
+                        "px_count_visib": px_count_visib,  
+                        "visib_fract": visib_fract,
                     }
                     if "test" not in self.name:
                         xyz_path = osp.join(xyz_root, f"{int_im_id:05d}_{anno_i:05d}-xyz.pkl")
@@ -268,8 +272,8 @@ OBJECTS = [
     "lumi_piano"
 ]
 
-TRACK_START = 2
-TRACK_END = 4
+TRACK_START = 1
+TRACK_END = 1
 
 DATASET = dict(
     syn_lumi_piano_train=dict(

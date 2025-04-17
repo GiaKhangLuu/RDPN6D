@@ -149,7 +149,11 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
         assert split in ['train', 'test'], "split should be 'train' or 'test'"
 
         if split == 'train':
-            dataset_dicts = filter_invalid_in_dataset_dicts(dataset_dicts, visib_thr=kwargs.get("filter_visib_thr"))
+            dataset_dicts = filter_invalid_in_dataset_dicts(
+                dataset_dicts, 
+                visib_thr=kwargs.get("filter_visib_thr"),
+                min_px_count_visib=kwargs.get("min_px_count_visib") 
+            )
 
         if split == 'test':
             if kwargs.get("load_dets_test"):  
